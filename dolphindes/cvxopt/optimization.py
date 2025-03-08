@@ -40,11 +40,12 @@ class _Optimizer():
 
     OPT_PARAMS_DEFAULTS = {'opttol': 1e-6, 'gradConverge': False, 'min_inner_iter': 5, 'max_restart': np.inf, 'penalty_ratio': 1e-2, 'penalty_reduction': 0.1, 'break_iter_period': 50, 'verbose': 0, 'penalty_vector_list': []}
 
-    def __init__(self, optfunc, feasible_func, penalty_vector_func, opt_params):
+    def __init__(self, optfunc, feasible_func, penalty_vector_func, is_convex, opt_params):
         self.optfunc = optfunc
         self.feasible_func = feasible_func
         self.penalty_vector_func = penalty_vector_func
         self.penalty_vector_list = [] 
+        self.is_convex = is_convex
         self.opt_params = {**self.OPT_PARAMS_DEFAULTS, **opt_params}
 
         if self.opt_params['verbose'] > 0:
@@ -59,6 +60,70 @@ class _Optimizer():
     def get_last_opt(self):
         """Get the last optimized x and f(x) values."""
         return self.opt_x, self.opt_fx
+    
+    def _line_search(self, dir : np.ndarray, x0 : np.ndarray, fx0 : np.ndarray, grad : np.ndarray, init_step_size : float, add_penalty : bool = False) -> float:
+        """This method implements a two-phase backtracking line search:
+        1. First finds a feasible step size by backtracking until the point is feasible
+        2. Then finds an optimal step size satisfying the Armijo condition while minimizing the function value
+        
+        Parameters
+        ----------
+        dir : numpy.ndarray
+            The search direction vector, normalized to 1
+        x0 : numpy.ndarray
+            The starting point for the line search
+        fx0 : float
+            Function value at the starting point, f(x0)
+        grad : numpy.ndarray
+            Gradient vector at the starting point
+        init_step_size : float
+            Initial step size to begin the line search
+        add_penalty : bool, optional
+            Flag to add penalty term to the line search, by default False
+        
+        Returns
+        -------
+        float
+            The optimal step size found by the line search
+        
+        Notes
+        -----
+        The Armijo condition ensures sufficient decrease in function value:
+            f(x + α·d) ≤ f(x) + c·α·∇f(x)ᵀd
+        where c is a small constant (c_A = 1e-4 in this implementation)"
+        """
+
+        # First, find feasible alpha 
+        c_reduct = 0.7
+        alpha = alpha_start = init_step_size
+
+        if self.verbose >= 3: print(f"\nStarting line search with parameters alpha_start = {alpha_start}, alpha = {alpha}")
+        while not self.feasible_func(x0 + alpha * dir):
+            alpha *= c_reduct
+        alpha_opt = alpha
+
+        # Next, find optimal alpha 
+        c_A = 1e-4
+        opt_val = np.inf
+        grad_direction = dir @ grad
+        while True:
+            tmp_value, _, _ = self.optfunc(x0 + alpha*dir, get_grad=False, get_hess=False)
+            if tmp_value < opt_val: #the dual is still decreasing as we backtrack, continue
+                opt_val = tmp_value; alpha_opt=alpha
+            else:
+                break
+            if not self.is_convex and tmp_value <= fx0 + c_A * alpha * grad_direction: #Armijo backtracking condition if problem is not convex
+                alpha_opt = alpha
+                break
+            
+            alpha *= c_reduct
+        
+        if add_penalty:
+            pass 
+
+        if self.verbose >= 2: print(f"Line search found optimal step size: {alpha_opt}")
+
+        return alpha_opt
     
     def run(self, x0, tol=None):
         """Run the optimization routine with initial point x0 and tolerance tol
@@ -99,87 +164,80 @@ class BFGS(_Optimizer):
             #TODO(alessio): implement gradconverge or objval termination
 
             if iter_num % self.opt_params['break_iter_period'] == 0 and iter_num > self.opt_params['min_inner_iter']:
-                self.prev_fx = self.opt_fx
                 if np.abs(self.prev_fx - self.opt_fx) < np.abs(self.opt_fx)*self.opt_params['opttol']:
                     return True
+                self.prev_fx = self.opt_fx
 
         elif iter_type == 'outer':
             raise NotImplementedError("Outer break condition not implemented yet")
         
         return False
-
-    def _line_search(self, direction : np.ndarray, start_x : np.ndarray, fx : np.ndarray, grad : np.ndarray, init_step_size : float, add_penalty : bool =False) -> float:
-        """This method implements a two-phase backtracking line search:
-        1. First finds a feasible step size by backtracking until the point is feasible
-        2. Then finds an optimal step size satisfying the Armijo condition while minimizing the function value
+    
+    def _update_Hinv(self, Hinv, new_grad, old_grad, delta, reset=False):
+        """Update the inverse Hessian approximation using the BFGS formula.
+        
+        The BFGS (Broyden-Fletcher-Goldfarb-Shanno) update is a quasi-Newton method 
+        that approximates the inverse Hessian matrix based on gradient information.
+        This method builds up curvature information as optimization progresses to
+        help inform the direction of the next step.
         
         Parameters
         ----------
-        direction : numpy.ndarray
-            The search direction vector
-        start_x : numpy.ndarray
-            The starting point for the line search
-        fx : float
-            Function value at the starting point
-        grad : numpy.ndarray
-            Gradient vector at the starting point
-        init_step_size : float
-            Initial step size to begin the line search
-        add_penalty : bool, optional
-            Flag to add penalty term to the line search, by default False
-        
+        Hinv : numpy.ndarray
+            Current inverse Hessian approximation
+        new_grad : numpy.ndarray
+            Gradient at the new point
+        old_grad : numpy.ndarray
+            Gradient at the previous point
+        delta : numpy.ndarray
+            Step taken to reach the new point (x_new - x_old)
+        reset : bool, optional
+            If True, reset the inverse Hessian to identity, by default False
+            
         Returns
         -------
-        float
-            The optimal step size found by the line search
-        
+        numpy.ndarray
+            Updated inverse Hessian approximation
+            
         Notes
         -----
-        The Armijo condition ensures sufficient decrease in function value:
-            f(x + α·d) ≤ f(x) + c·α·∇f(x)ᵀd
-        where c is a small constant (c_A = 1e-4 in this implementation)"
+        The standard BFGS update formula is:
+            H_{k+1} = (I - ρ*s_k*y_k^T)*H_k*(I - ρ*y_k*s_k^T) + ρ*s_k*s_k^T
+        where:
+            s_k = delta (step)
+            y_k = new_grad - old_grad (change in gradient)
+            ρ = 1/(y_k^T*s_k)
+            
+        The update is skipped if y_k^T*s_k is too small to avoid numerical instability.
+        For quadratic functions, the inverse Hessian converges to the true inverse.
         """
         
-        grad_direction = direction @ grad
-
-        # First, find feasible alpha 
-        c_reduct = 0.7; c_A = 1e-4; c_W = 0.9
-        alpha = alpha_start = init_step_size
-
-        while not self.feasible_func(self.opt_x + alpha * direction):
-            alpha *= c_reduct
-
-        alpha_opt = alpha
-
-        if self.verbose >= 3: 
-            print_string = f"\nStarting line search with parameters alpha_start = {alpha_start}, alpha = {alpha}"
-            print(print_string)
-
-        # Next, find optimal alpha 
-        Dopt = np.inf
-        while True:
-            tmp_value, _, _ = self.optfunc(start_x + alpha*direction, get_grad=False, get_hess=False)
-            if tmp_value < Dopt: #the dual is still decreasing as we backtrack, continue
-                Dopt = tmp_value; alpha_opt=alpha
-            else:
-                break
-            if tmp_value <= fx + c_A*alpha*grad_direction: #Armijo backtracking condition
-                alpha_opt = alpha
-                break
-            
-            alpha *= c_reduct
+        # The standard BFGS update formula for the inverse Hessian approximation
+        # Note: delta is the step (s_k) and gamma is the change in gradient (y_k)
         
-        if add_penalty:
-            pass 
-
-        if self.verbose >= 2: print(f"Line search found optimal step size: {alpha_opt}")
-
-        return alpha_opt
+        if reset:
+            return np.eye(Hinv.shape[0])  # Reset to identity if requested
+        
+        gamma = new_grad - old_grad  # Change in gradient
+        gamma_dot_delta = gamma @ delta  # y_k^T * s_k
+        
+        # Skip update if gamma_dot_delta is too small (avoid division by zero or numerical instability)
+        if abs(gamma_dot_delta) < 1e-10:
+            if self.verbose >= 3:
+                print("Skipping Hinv update due to small gamma_dot_delta")
+            return Hinv
+            
+        # Standard BFGS update formula
+        rho = 1.0 / gamma_dot_delta
+        I = np.eye(Hinv.shape[0])
+        term1 = I - rho * np.outer(delta, gamma)
+        term2 = I - rho * np.outer(gamma, delta)
+        term3 = rho * np.outer(delta, delta)
+        
+        new_Hinv = term1 @ Hinv @ term2 + term3
+            
+        return new_Hinv
     
-
-    def _update_hess_inv(self):
-        pass 
-
     def run(self, x0, tol=None):
         self.opt_x = x0
         self.ndof = self.opt_x.size
@@ -212,17 +270,21 @@ class BFGS(_Optimizer):
                 if self.opt_params['verbose'] > 1:
                     print(f"Inner iteration {inner_iter_count}, opt_fx = {self.opt_fx}")
 
-                new_direction = -Hinv @ self.xgrad
-                new_direction /= np.linalg.norm(new_direction)
+                BFGS_dir = - Hinv @ self.xgrad
+                nBFGS_dir = BFGS_dir / np.linalg.norm(BFGS_dir)
 
-                opt_step_size = self._line_search(new_direction, self.opt_x, self.opt_fx, self.xgrad, last_step_size) # Perform line search for step size 
+                opt_step_size = self._line_search(nBFGS_dir, self.opt_x, self.opt_fx, self.xgrad, last_step_size) # Perform line search for step size 
                 
-                delta = opt_step_size * new_direction
+                delta = opt_step_size * nBFGS_dir
+                old_grad = self.xgrad.copy()  # Save old gradient before update
                 self.opt_x += delta
 
-                self.opt_fx, self.xgrad, _ = self.optfunc(self.opt_x, get_grad=True, get_hess=False)
+                new_opt_fx, new_grad, _ = self.optfunc(self.opt_x, get_grad=True, get_hess=False)
 
-                self._update_hess_inv() # Update Hessian inverse 
+                Hinv = self._update_Hinv(Hinv, new_grad, old_grad, delta) # Update Hessian inverse 
+                
+                self.opt_fx = new_opt_fx
+                self.xgrad = new_grad
 
                 if self._break_condition(inner_iter_count, 'inner'): break 
 
