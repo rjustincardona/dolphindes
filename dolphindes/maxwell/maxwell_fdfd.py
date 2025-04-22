@@ -55,13 +55,25 @@ class Maxwell_FDFD():
         self.nonpmlNy = self.Ny - 2 * self.Npmly
 
 class TM_FDFD(Maxwell_FDFD):
+    """
+    Finite-difference frequency-domain solver for TM fields in 2D, with PMLs on the boundaries.
+    
+    Attributes
+    ----------
+    All of the attributes of the parent class Maxwell_FDFD, plus:
+    dl : float
+        finite difference grid pixel size, in units of 1
+    M0 : sparse complex array
+        Maxwell operator in sparse matrix format, representing the operator ∇x∇x - omega^2 I in 2D for TM fields.
+    """
+
     def __init__(self, omega, Nx, Ny, Npmlx, Npmly, dl, bloch_x=0.0, bloch_y=0.0):
         dx, dy = dl, dl 
         super().__init__(omega, Nx, Ny, Npmlx, Npmly, dx, dy, bloch_x, bloch_y)
         self.dl = dl 
-        self.M0 = self.make_TM_Maxwell_Operator()
+        self.M0 = self._make_TM_Maxwell_Operator()
 
-    def make_TM_Maxwell_Operator(self):
+    def _make_TM_Maxwell_Operator(self):
         """ Assembles the Maxwell operator ∇x∇x - omega^2 I in 2D for TM fields, with PMLs on the boundaries 
         
         Returns
