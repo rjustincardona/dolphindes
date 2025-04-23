@@ -39,6 +39,12 @@ class Maxwell_FDFD():
     """
     def __init__(self, omega, Nx, Ny, Npmlx, Npmly, dx, dy, bloch_x=0.0, bloch_y=0.0):
         self.omega = omega 
+
+        if not isinstance(Nx, int) or not isinstance(Ny, int) or not isinstance(Npmlx, int) or not isinstance(Npmly, int):
+            import warnings
+            warnings.warn("Nx, Ny, Npmlx, and Npmly should be integers. Automatically converting them to integers.")
+            Nx, Ny, Npmlx, Npmly = int(Nx), int(Ny), int(Npmlx), int(Npmly)
+        
         self.Nx = Nx
         self.Ny = Ny
         self.Npmlx = Npmlx
@@ -46,13 +52,17 @@ class Maxwell_FDFD():
         self.dx = dx
         self.dy = dy
         self.EPSILON_0 = 1.0
-        self.C = 1.0
+        self.MU_0 = 1.0
+        self.C_0 = 1.0
         self.ETA_0 = 1.0
         self.bloch_x = bloch_x
         self.bloch_y = bloch_y
+        self.k = self.omega / self.C_0
 
         self.nonpmlNx = self.Nx - 2 * self.Npmlx 
         self.nonpmlNy = self.Ny - 2 * self.Npmly
+
+        assert (self.nonpmlNx > 0) and (self.nonpmlNy > 0), "Non-PML grid size must be positive. Check Nx, Ny, Npmlx, and Npmly values."
 
 class TM_FDFD(Maxwell_FDFD):
     """
@@ -71,9 +81,9 @@ class TM_FDFD(Maxwell_FDFD):
         dx, dy = dl, dl 
         super().__init__(omega, Nx, Ny, Npmlx, Npmly, dx, dy, bloch_x, bloch_y)
         self.dl = dl 
-        self.M0 = self._make_TM_Maxwell_Operator()
+        self.M0 = self._make_TM_Maxwell_Operator(self.Nx, self.Ny, self.Npmlx, self.Npmly)
 
-    def _make_TM_Maxwell_Operator(self):
+    def _make_TM_Maxwell_Operator(self, Nx, Ny, Npmlx, Npmly) -> sp.csc_array:
         """ Assembles the Maxwell operator ∇x∇x - omega^2 I in 2D for TM fields, with PMLs on the boundaries 
         
         Returns
@@ -86,8 +96,7 @@ class TM_FDFD(Maxwell_FDFD):
             """ Forward derivative in x """
             Nx, Ny = shape
             phasor_x = np.exp(1j * bloch_x)
-            #Dxf = sp.diags([-1, 1, phasor_x], [0, 1, -Nx+1], shape=(Nx, Nx), dtype=complex)
-            Dxf = sp.diags_array([-1, 1], [0, 1], shape=(Nx, Nx), dtype=complex) + sp.diags_array([phasor_x], [-Nx+1], shape=(Nx, Nx), dtype=complex)
+            Dxf = sp.diags_array([-1, 1], offsets=[0, 1], shape=(Nx, Nx), dtype=complex) + sp.diags_array([phasor_x], offsets=[-Nx+1], shape=(Nx, Nx), dtype=complex)
             Dxf = 1 / dL * sp.kron(Dxf, sp.eye(Ny), format="csc")
             return Dxf
 
@@ -95,8 +104,7 @@ class TM_FDFD(Maxwell_FDFD):
             """ Backward derivative in x """
             Nx, Ny = shape
             phasor_x = np.exp(1j * bloch_x)
-            #Dxb = sp.diags([1, -1, -np.conj(phasor_x)], [0, -1, Nx-1], shape=(Nx, Nx), dtype=complex)
-            Dxb = sp.diags_array([1, -1], [0, -1], shape=(Nx, Nx), dtype=complex) + sp.diags_array([-np.conj(phasor_x)], [Nx-1], shape=(Nx, Nx), dtype=complex)
+            Dxb = sp.diags_array([1, -1], offsets=[0, -1], shape=(Nx, Nx), dtype=complex) + sp.diags_array([-np.conj(phasor_x)], offsets=[Nx-1], shape=(Nx, Nx), dtype=complex)
             Dxb = 1 / dL * sp.kron(Dxb, sp.eye(Ny), format="csc")
             return Dxb
 
@@ -104,8 +112,7 @@ class TM_FDFD(Maxwell_FDFD):
             """ Forward derivative in y """
             Nx, Ny = shape
             phasor_y = np.exp(1j * bloch_y)
-            #Dyf = sp.diags([-1, 1, phasor_y], [0, 1, -Ny+1], shape=(Ny, Ny))
-            Dyf = sp.diags_array([-1, 1], [0, 1], shape=(Ny, Ny), dtype=complex) + sp.diags_array([phasor_y], [-Ny+1], shape=(Ny, Ny), dtype=complex)
+            Dyf = sp.diags_array([-1, 1], offsets=[0, 1], shape=(Ny, Ny), dtype=complex) + sp.diags_array([phasor_y], offsets=[-Ny+1], shape=(Ny, Ny), dtype=complex)
             Dyf = 1 / dL * sp.kron(sp.eye(Nx), Dyf, format="csc")
             return Dyf
 
@@ -113,8 +120,7 @@ class TM_FDFD(Maxwell_FDFD):
             """ Backward derivative in y """
             Nx, Ny = shape
             phasor_y = np.exp(1j * bloch_y)
-            #Dyb = sp.diags([1, -1, -np.conj(phasor_y)], [0, -1, Ny-1], shape=(Ny, Ny))
-            Dyb = sp.diags_array([1, -1], [0, -1], shape=(Ny, Ny), dtype=complex) + sp.diags_array([-np.conj(phasor_y)], [Ny-1], shape=(Ny, Ny), dtype=complex)
+            Dyb = sp.diags_array([1, -1], offsets=[0, -1], shape=(Ny, Ny), dtype=complex) + sp.diags_array([-np.conj(phasor_y)], offsets=[Ny-1], shape=(Ny, Ny), dtype=complex)
             Dyb = 1 / dL * sp.kron(sp.eye(Nx), Dyb, format="csc")
             return Dyb
     
@@ -198,21 +204,21 @@ class TM_FDFD(Maxwell_FDFD):
             Sy_b_vec = Sy_b_2D.flatten()
 
             # Construct the 1D total s-vector into a diagonal matrix using diags_array instead of spdiags
-            Sx_f = sp.diags_array(Sx_f_vec, [0], shape=(N, N), dtype=complex, format="csc")
-            Sx_b = sp.diags_array(Sx_b_vec, [0], shape=(N, N), dtype=complex, format="csc")
-            Sy_f = sp.diags_array(Sy_f_vec, [0], shape=(N, N), dtype=complex, format="csc")
-            Sy_b = sp.diags_array(Sy_b_vec, [0], shape=(N, N), dtype=complex, format="csc")
-
+            Sx_f = sp.dia_array((Sx_f_vec, 0), shape=(N, N))
+            Sx_b = sp.dia_array((Sx_b_vec, 0), shape=(N, N))
+            Sy_f = sp.dia_array((Sy_f_vec, 0), shape=(N, N))
+            Sy_b = sp.dia_array((Sy_b_vec, 0), shape=(N, N))
+            
             return Sx_f, Sx_b, Sy_f, Sy_b
 
-        shape = (self.Nx, self.Ny)
+        shape = (Nx, Ny)
 
         Dxf = make_Dxf(self.dl, shape, bloch_x=self.bloch_x)
         Dxb = make_Dxb(self.dl, shape, bloch_x=self.bloch_x)
         Dyf = make_Dyf(self.dl, shape, bloch_y=self.bloch_y)
         Dyb = make_Dyb(self.dl, shape, bloch_y=self.bloch_y)
 
-        Sxf, Sxb, Syf, Syb = create_S_matrices(self.omega, shape, (self.Npmlx, self.Npmly), self.dl)
+        Sxf, Sxb, Syf, Syb = create_S_matrices(self.omega, shape, (Npmlx, Npmly), self.dl)
         
         #dress the derivative functions with pml
         Dxf = Sxf @ Dxf
@@ -221,12 +227,12 @@ class TM_FDFD(Maxwell_FDFD):
         Dyf = Syf @ Dyf
         Dyb = Syb @ Dyb
 
-        M = -Dxf @ Dxb - Dyf @ Dyb - self.EPSILON_0*self.omega**2 * sp.eye(self.Nx*self.Ny)
+        M = sp.csc_array(-Dxf @ Dxb - Dyf @ Dyb - self.EPSILON_0*self.omega**2 * sp.eye(Nx*Ny))
         return M
     
-    def _get_diagM_from_chigrid(self, chigrid: np.ndarray) -> sp.csc_array:
+    def _get_diagM_from_chigrid(self, chigrid: np.ndarray) -> sp.dia_array:
         """ get the diagonal part of the Maxwell operator from the material susceptibility chigrid (flattens it) """
-        return -sp.diags_array(chigrid.flatten() * self.omega**2)
+        return -sp.diags_array(chigrid.flatten() * self.omega**2, format='dia')
     
     def get_TM_dipole_field(self, cx: int, cy: int, chigrid: np.ndarray = None) -> np.ndarray:
         """
@@ -272,78 +278,122 @@ class TM_FDFD(Maxwell_FDFD):
         Ez = np.reshape(sp.linalg.spsolve(M, RHS), (self.Nx, self.Ny))
         return Ez
 
-    def get_TM_G_od(self, design_mask: np.ndarray, observe_mask: np.ndarray) -> np.ndarray:
+    def get_TM_G_ba(self, A_mask: np.ndarray, B_mask: np.ndarray) -> np.ndarray:
         """
-        calculate vacuum Green's function from design_mask region to observe_mask region
-        from vacuum dipole field using a sliding window to exploit translation symmetry
+        Compute the vacuum Green’s function G_{BA} mapping sources in region A to fields in region B.
+
+        This routine exploits translational symmetry by embedding two copies of the non-PML domain
+        into a larger “big” grid. A single dipole solve at the center of the big grid produces
+        a field map Ezfield. For each source location in the design (A_mask), we extract the
+        corresponding window of size (nonpmlNx × nonpmlNy) and sample at the observation mask B_mask.
 
         Parameters
         ----------
-        design_mask : np.ndarray (dtype bool)
-            mask of the design region, where the Green's function is calculated
-        observe_mask : np.ndarray (dtype bool)
-            mask of the observation region, where the Green's function is observed
-        
+        A_mask : np.ndarray of bool, shape (Nx, Ny)
+            Mask specifying the source/design region in the full grid.
+        B_mask : np.ndarray of bool, shape (Nx, Ny)
+            Mask specifying the observation region in the full grid.
+
         Returns
         -------
-        G_od : np.ndarray (dtype complex)
-            Green's function from design_mask to observe_mask, shape is (number of observed points, number of design points)
-
+        G_od : np.ndarray of complex, shape (n_obs, n_src)
+            Green’s function matrix where each column is the field at B_mask
+            due to a unit dipole at a location in A_mask.
         """
+        # validate masks against the full grid
+        assert A_mask.shape == (self.Nx, self.Ny)
+        assert B_mask.shape == (self.Nx, self.Ny)
+
+        # restrict masks to the non-PML interior
+        A_mask_s = A_mask[self.Npmlx:self.Npmlx + self.nonpmlNx,
+                          self.Npmly:self.Npmly + self.nonpmlNy]
+        B_mask_s = B_mask[self.Npmlx:self.Npmlx + self.nonpmlNx,
+                          self.Npmly:self.Npmly + self.nonpmlNy]
+
+        # dimension checks
+        assert A_mask_s.shape == (self.nonpmlNx, self.nonpmlNy)
+        assert B_mask_s.shape == (self.nonpmlNx, self.nonpmlNy)
+
+        # build a “big” grid that can slide the small domain around
         bigNx = 2 * self.nonpmlNx - 1 + 2 * self.Npmlx
         bigNy = 2 * self.nonpmlNy - 1 + 2 * self.Npmly
-        bigcx = self.Npmlx + self.nonpmlNx - 1
-        bigcy = self.Npmly + self.nonpmlNy - 1
-        
-        A = self.M0
+        bigcx = self.Npmlx + self.nonpmlNx - 1  # center x index
+        bigcy = self.Npmly + self.nonpmlNy - 1  # center y index
+
+        # assemble vacuum Maxwell operator on the big grid
+        A = self._make_TM_Maxwell_Operator(bigNx, bigNy,
+                                           self.Npmlx, self.Npmly)
+
+        # place a unit dipole source at the center of the big grid
         sourcegrid = np.zeros((bigNx, bigNy), dtype=complex)
         sourcegrid[bigcx, bigcy] = 1.0 / self.dl
         RHS = 1j * self.omega * sourcegrid.flatten()
 
+        # solve once for Ezfield on the big grid
         Ezfield = np.reshape(sp.linalg.spsolve(A, RHS), (bigNx, bigNy))
-        design_idx = np.argwhere(design_mask)
-        G_od = np.zeros((np.sum(observe_mask), design_idx.shape[0]), dtype=complex)
-        for i, idx in enumerate(design_idx):
-            ulx = bigcx - idx[0]
-            uly = bigcy - idx[1]  # big grid coordinates of upper-left corner of small grid
-            G_od[:, i] = (Ezfield[ulx:ulx + self.nonpmlNx, uly:uly + self.nonpmlNy])[observe_mask]
 
-        k = self.omega / self.C_0
-        G_od *= self.dl * (-1j * k / self.ETA_0)  # scale Ezfield to get true representation of Green's function
+        # indices of design points in the small grid
+        design_idx = np.argwhere(A_mask_s)
+        n_src = design_idx.shape[0]
+        n_obs = int(np.sum(B_mask_s))
+        G_od = np.zeros((n_obs, n_src), dtype=complex)
+
+        # for each design point, extract the corresponding sub-window in Ezfield
+        for i, (ix, iy) in enumerate(design_idx):
+            ulx = bigcx - ix  # upper-left corner x of the small grid in big grid
+            uly = bigcy - iy  # upper-left corner y 
+            window = Ezfield[ulx : ulx + self.nonpmlNx,
+                             uly : uly + self.nonpmlNy]
+            G_od[:, i] = window[B_mask_s]
+
+        # scale to get the true vacuum Green’s function for TM polarization
+        G_od *= self.dl * (-1j * self.k / self.ETA_0)
         return G_od
 
-    def get_Gddinv(self, designMask: np.ndarray, chigrid: np.ndarray = None) -> tuple[np.ndarray, sp.csc_array]:
+
+    def get_Gaainv(self, A_mask: np.ndarray, chigrid: np.ndarray = None) -> tuple[np.ndarray, sp.csc_array]:
         """
-        Get the inverse of the Green's function G_dd^-1 for the design region, using Woodbury inversion.
+        Compute the inverse Green’s function on region A, G_{AA}^{-1}, using a Woodbury identity.
+
+        We partition the full Maxwell operator M into blocks corresponding to region A (design)
+        and its complement B (background):
+            M = [[A, B],
+                 [C, D]]
+        Then G_{AA}^{-1} = D - C A^{-1} B, up to a multiplicative constant MU_0 / k^2.
 
         Parameters
         ----------
-        designMask : np.ndarray (dtype bool)
-            mask of the design region, where the Green's function is calculated
-        chigrid : np.ndarray (dtype complex), optional
-            spatial distribution of material susceptibility. The default is None, corresponding to vacuum.
+        A_mask : np.ndarray of bool, shape (Nx, Ny)
+            Mask for the design region A.
+        chigrid : np.ndarray of complex, optional
+            Material susceptibility distribution. If provided, M = M0 + diag(ω² χ).
 
         Returns
         -------
-        G_ddinv : np.ndarray (dtype complex)
-            Inverse of the Green's function for the design region, shape is (number of design points, number of design points)
-        M : scipy.sparse.csc_array
-            The Maxwell operator used to compute the inverse
+        G_ddinv : sp.csc_array of shape (n_src, n_src)
+            The inverse Green’s function on region A.
+        M : sp.csc_array
+            The full Maxwell operator used in the computation.
         """
-
+        # assemble full Maxwell operator (with materials if given)
         M = self.M0 if chigrid is None else self.M0 + self._get_diagM_from_chigrid(chigrid)
-        
-        designInd = np.nonzero(designMask.flatten())[0]
-        backgroundInd = np.nonzero(np.logical_not(designMask.flatten()))[0]
-        
-        A = (M[:,backgroundInd])[backgroundInd,:]
-        B = (M[:,designInd])[backgroundInd,:]
-        C = (M[:,backgroundInd])[designInd,:]
-        D = (M[designInd,:])[:,designInd]
-        
+
+        # flatten masks and get index lists for design (A) and background (B)
+        flatA = A_mask.flatten()
+        designInd = np.nonzero(flatA)[0]
+        backgroundInd = np.nonzero(~flatA)[0]
+
+        # extract blocks A, B, C, D from M
+        A = (M[:, backgroundInd])[backgroundInd, :]
+        B = (M[:, designInd])[backgroundInd, :]
+        C = (M[:, backgroundInd])[designInd, :]
+        D = (M[designInd, :])[:, designInd]
+
+        # solve A * X = B  → X = A^{-1} B
         AinvB = sp.linalg.spsolve(A, B)
-        
-        k = self.omega / self.C_0
-        MU_0 = 1.0
-        Gfac = MU_0 / k**2
-        return (D - (C @ AinvB))*Gfac, M
+
+        # Woodbury: G_{AA}^{-1} = D - C A^{-1} B
+        Gfac = self.MU_0 / self.k**2
+        G_ddinv = (D - (C @ AinvB)) * Gfac
+
+        return G_ddinv, M
