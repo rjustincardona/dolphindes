@@ -2,7 +2,7 @@ from dolphindes.maxwell import TM_FDFD
 import numpy as np 
 import scipy.sparse as sp 
 
-def test_maxwell():
+def test_maxwell_TM():
     wvlgth = 1.0 
     omega = 2 * np.pi / wvlgth
     gpr = 50 
