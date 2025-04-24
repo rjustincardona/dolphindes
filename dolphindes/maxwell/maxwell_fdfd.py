@@ -62,7 +62,9 @@ class Maxwell_FDFD():
         self.nonpmlNx = self.Nx - 2 * self.Npmlx 
         self.nonpmlNy = self.Ny - 2 * self.Npmly
 
-        assert (self.nonpmlNx > 0) and (self.nonpmlNy > 0), "Non-PML grid size must be positive. Check Nx, Ny, Npmlx, and Npmly values."
+        if (self.nonpmlNx <= 0) or (self.nonpmlNy <= 0):
+            raise ValueError("Non-PML grid size must be positive. Check Nx, Ny, Npmlx, and Npmly values.")
+
 
 class TM_FDFD(Maxwell_FDFD):
     """
