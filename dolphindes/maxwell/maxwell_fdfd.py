@@ -62,7 +62,9 @@ class Maxwell_FDFD():
         self.nonpmlNx = self.Nx - 2 * self.Npmlx 
         self.nonpmlNy = self.Ny - 2 * self.Npmly
 
-        assert (self.nonpmlNx > 0) and (self.nonpmlNy > 0), "Non-PML grid size must be positive. Check Nx, Ny, Npmlx, and Npmly values."
+        if (self.nonpmlNx <= 0) or (self.nonpmlNy <= 0):
+            raise ValueError("Non-PML grid size must be positive. Check Nx, Ny, Npmlx, and Npmly values.")
+
 
 class TM_FDFD(Maxwell_FDFD):
     """
@@ -278,7 +280,7 @@ class TM_FDFD(Maxwell_FDFD):
         Ez = np.reshape(sp.linalg.spsolve(M, RHS), (self.Nx, self.Ny))
         return Ez
 
-    def get_TM_G_ba(self, A_mask: np.ndarray, B_mask: np.ndarray) -> np.ndarray:
+    def get_TM_Gba(self, A_mask: np.ndarray, B_mask: np.ndarray) -> np.ndarray:
         """
         Compute the vacuum Green’s function G_{BA} mapping sources in region A to fields in region B.
 
@@ -296,7 +298,7 @@ class TM_FDFD(Maxwell_FDFD):
 
         Returns
         -------
-        G_od : np.ndarray of complex, shape (n_obs, n_src)
+        Gba : np.ndarray of complex, shape (n_B, n_A)
             Green’s function matrix where each column is the field at B_mask
             due to a unit dipole at a location in A_mask.
         """
@@ -334,9 +336,9 @@ class TM_FDFD(Maxwell_FDFD):
 
         # indices of design points in the small grid
         design_idx = np.argwhere(A_mask_s)
-        n_src = design_idx.shape[0]
-        n_obs = int(np.sum(B_mask_s))
-        G_od = np.zeros((n_obs, n_src), dtype=complex)
+        n_A = design_idx.shape[0]
+        n_B = int(np.sum(B_mask_s))
+        Gba = np.zeros((n_B, n_A), dtype=complex)
 
         # for each design point, extract the corresponding sub-window in Ezfield
         for i, (ix, iy) in enumerate(design_idx):
@@ -344,14 +346,14 @@ class TM_FDFD(Maxwell_FDFD):
             uly = bigcy - iy  # upper-left corner y 
             window = Ezfield[ulx : ulx + self.nonpmlNx,
                              uly : uly + self.nonpmlNy]
-            G_od[:, i] = window[B_mask_s]
+            Gba[:, i] = window[B_mask_s]
 
         # scale to get the true vacuum Green’s function for TM polarization
-        G_od *= self.dl * (-1j * self.k / self.ETA_0)
-        return G_od
+        Gba *= self.dl * (-1j * self.k / self.ETA_0)
+        return Gba
 
 
-    def get_Gaainv(self, A_mask: np.ndarray, chigrid: np.ndarray = None) -> tuple[np.ndarray, sp.csc_array]:
+    def get_GaaInv(self, A_mask: np.ndarray, chigrid: np.ndarray = None) -> tuple[np.ndarray, sp.csc_array]:
         """
         Compute the inverse Green’s function on region A, G_{AA}^{-1}, using a Woodbury identity.
 
@@ -370,7 +372,7 @@ class TM_FDFD(Maxwell_FDFD):
 
         Returns
         -------
-        G_ddinv : sp.csc_array of shape (n_src, n_src)
+        GaaInv : sp.csc_array of shape (n_A, n_A)
             The inverse Green’s function on region A.
         M : sp.csc_array
             The full Maxwell operator used in the computation.
@@ -379,9 +381,9 @@ class TM_FDFD(Maxwell_FDFD):
         M = self.M0 if chigrid is None else self.M0 + self._get_diagM_from_chigrid(chigrid)
 
         # flatten masks and get index lists for design (A) and background (B)
-        flatA = A_mask.flatten()
-        designInd = np.nonzero(flatA)[0]
-        backgroundInd = np.nonzero(~flatA)[0]
+        flat_A_mask = A_mask.flatten()
+        designInd = np.nonzero(flat_A_mask)[0]
+        backgroundInd = np.nonzero(~flat_A_mask)[0]
 
         # extract blocks A, B, C, D from M
         A = (M[:, backgroundInd])[backgroundInd, :]
@@ -394,6 +396,6 @@ class TM_FDFD(Maxwell_FDFD):
 
         # Woodbury: G_{AA}^{-1} = D - C A^{-1} B
         Gfac = self.MU_0 / self.k**2
-        G_ddinv = (D - (C @ AinvB)) * Gfac
+        GaaInv = (D - (C @ AinvB)) * Gfac
 
-        return G_ddinv, M
+        return GaaInv, M
