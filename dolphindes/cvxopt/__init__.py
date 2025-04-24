@@ -1,3 +1,4 @@
-from .dual import SharedProjQCQP
+from .qcqp import SparseSharedProjQCQP
+from .optimization import BFGS, Newton
 
-__all__ = ['SharedProjQCQP']
+__all__ = ['SparseSharedProjQCQP', 'BFGS', 'Newton']
