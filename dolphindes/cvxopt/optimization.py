@@ -18,8 +18,10 @@ class _Optimizer():
         optfunc: Callable function to be optimized.
         valid_func: Callable function that checks if a solution is valid.
         penalty_vector_func: Callable function that returns penalty vectors.
+        is_convex: bool 
+            Boolean indicating if the optimization problem is convex.
         opt_params: Dictionary containing optimization parameters. These parameters 
-            override the default parameters defined in OPT_PARAMS_DEFAULTS.
+            override the default parameters defined in OPT_PARAMS_DEFAULTS
     
     Attributes
     ----------
@@ -38,15 +40,16 @@ class _Optimizer():
         the results of the most recent optimization.
     """
 
-    OPT_PARAMS_DEFAULTS = {'opttol': 1e-6, 'gradConverge': False, 'min_inner_iter': 5, 'max_restart': np.inf, 'penalty_ratio': 1e-2, 'penalty_reduction': 0.1, 'break_iter_period': 50, 'verbose': 0, 'penalty_vector_list': []}
+    OPT_PARAMS_DEFAULTS = {'opttol': 1e-8, 'gradConverge': False, 'min_inner_iter': 5, 'max_restart': np.inf, 'penalty_ratio': 1e-2, 'penalty_reduction': 0.1, 'break_iter_period': 50, 'verbose': 0}
 
     def __init__(self, optfunc, feasible_func, penalty_vector_func, is_convex, opt_params):
         self.optfunc = optfunc
         self.feasible_func = feasible_func
         self.penalty_vector_func = penalty_vector_func
-        self.penalty_vector_list = [] 
+        
         self.is_convex = is_convex
         self.opt_params = {**self.OPT_PARAMS_DEFAULTS, **opt_params}
+        self.penalty_vector_list = []
 
         if self.opt_params['verbose'] > 0:
             print('Optimizer initialized with parameters:')
@@ -61,7 +64,7 @@ class _Optimizer():
         """Get the last optimized x and f(x) values."""
         return self.opt_x, self.opt_fx
     
-    def _line_search(self, dir : np.ndarray, x0 : np.ndarray, fx0 : np.ndarray, grad : np.ndarray, init_step_size : float, add_penalty : bool = False) -> float:
+    def _line_search(self, dir : np.ndarray, x0 : np.ndarray, fx0 : np.ndarray, grad : np.ndarray, init_step_size : float) -> float:
         """This method implements a two-phase backtracking line search:
         1. First finds a feasible step size by backtracking until the point is feasible
         2. Then finds an optimal step size satisfying the Armijo condition while minimizing the function value
@@ -101,13 +104,14 @@ class _Optimizer():
         while not self.feasible_func(x0 + alpha * dir):
             alpha *= c_reduct
         alpha_opt = alpha
+        alpha_feas = alpha
 
         # Next, find optimal alpha 
         c_A = 1e-4
         opt_val = np.inf
         grad_direction = dir @ grad
         while True:
-            tmp_value, _, _ = self.optfunc(x0 + alpha*dir, get_grad=False, get_hess=False)
+            tmp_value, _, _, _ = self.optfunc(x0 + alpha*dir, get_grad=False, get_hess=False)
             if tmp_value < opt_val: #the dual is still decreasing as we backtrack, continue
                 opt_val = tmp_value; alpha_opt=alpha
             else:
@@ -118,12 +122,9 @@ class _Optimizer():
             
             alpha *= c_reduct
         
-        if add_penalty:
-            pass 
-
         if self.verbose >= 2: print(f"Line search found optimal step size: {alpha_opt}")
 
-        return alpha_opt
+        return alpha_opt, alpha_feas
     
     def run(self, x0, tol=None):
         """Run the optimization routine with initial point x0 and tolerance tol
@@ -153,7 +154,6 @@ class BFGS(_Optimizer):
     ---------------------
         - run() is implemented via BFGS optimization algorithm
         - _break_condition() is implemented to check for convergence
-        - _line_search() is implemented to find optimal step size
         - _update_hess_inv() is implemented to update the inverse Hessian approximation as part of BFGS
     """
     def __init__(self, *params):
@@ -161,15 +161,36 @@ class BFGS(_Optimizer):
     
     def _break_condition(self, iter_num, iter_type):
         if iter_type == 'inner':
-            #TODO(alessio): implement gradconverge or objval termination
+            # Directional stationarity residual convergence
+            if iter_num > self.opt_params['min_inner_iter']:
+                function_value = self.opt_fx 
+                opttol = self.opt_params['opttol']
+                fminus_xxgrad = function_value - np.dot(self.opt_x, self.xgrad)
+                remaining_descent = np.abs(self.opt_x) @ np.abs(self.xgrad)
+                gradConverge = self.opt_params['gradConverge']
+                
+                if gradConverge  and np.abs(function_value - fminus_xxgrad)< opttol * np.abs(fminus_xxgrad) and np.abs(remaining_descent)< opttol * np.abs(fminus_xxgrad) and np.linalg.norm(self.xgrad) < opttol * np.abs(function_value): 
+                    return True 
 
-            if iter_num % self.opt_params['break_iter_period'] == 0 and iter_num > self.opt_params['min_inner_iter']:
-                if np.abs(self.prev_fx - self.opt_fx) < np.abs(self.opt_fx)*self.opt_params['opttol']:
+                elif (not gradConverge) and np.abs(function_value-fminus_xxgrad) < opttol*np.abs(fminus_xxgrad) and np.abs(remaining_descent)<opttol*np.abs(fminus_xxgrad):
+                    return True 
+            
+            # Simple objective value convergence 
+            if iter_num % self.opt_params['break_iter_period'] == 0:
+                if self.verbose > 0 :print(f"iter_num: {iter_num}, prev_fx: {self.prev_fx}, opt_fx: {self.opt_fx}, opttol: {self.opt_params['opttol']}")
+                if np.abs(self.prev_fx - self.opt_fx) < np.abs(self.opt_fx)*self.opt_params['opttol'] or np.isclose(self.opt_fx, 0, atol=1e-14):
                     return True
                 self.prev_fx = self.opt_fx
 
         elif iter_type == 'outer':
-            raise NotImplementedError("Outer break condition not implemented yet")
+            # Outer objective value convergence
+            if np.abs(self.prev_fx_outer - self.opt_fx) < np.abs(self.opt_fx)*self.opt_params['opttol'] or np.isclose(self.opt_fx, 0, atol=1e-14):
+                return True
+            
+            # If a max number of outer iterations was specified, check for that 
+            if iter_num > self.opt_params['max_restart']:
+                if self.verbose >= 2: print(f"Maximum number of outer iterations reached: {self.opt_params['max_restart']}")
+                return True
         
         return False
     
@@ -222,10 +243,10 @@ class BFGS(_Optimizer):
         gamma_dot_delta = gamma @ delta  # y_k^T * s_k
         
         # Skip update if gamma_dot_delta is too small (avoid division by zero or numerical instability)
-        if abs(gamma_dot_delta) < 1e-10:
-            if self.verbose >= 3:
-                print("Skipping Hinv update due to small gamma_dot_delta")
-            return Hinv
+        # if abs(gamma_dot_delta) < 1e-10:
+        #     if self.verbose >= 3:
+        #         print("Skipping Hinv update due to small gamma_dot_delta")
+        #     return Hinv
             
         # Standard BFGS update formula
         rho = 1.0 / gamma_dot_delta
@@ -238,11 +259,26 @@ class BFGS(_Optimizer):
             
         return new_Hinv
     
+    def _add_penalty(self, opt_step_size, last_step_size, feas_step_size, x0, dir, opt_fx0):
+        if opt_step_size / last_step_size > (self.opt_params['penalty_reduction'] + 1) / 2:
+            return opt_step_size * 2, False
+        else:
+            if feas_step_size / last_step_size < (self.opt_params['penalty_reduction'] + 1) / 2 and opt_step_size / feas_step_size > (self.opt_params['penalty_reduction'] + 1) / 2:
+                if self.verbose >= 2: print(f"Adding penalty due to feasibility wall.")
+                penalty_vector, _ = self.penalty_vector_func(x0 + opt_step_size * dir)
+                penalty_value = self.optfunc(x0, get_grad=False, get_hess=False, penalty_vectors=[penalty_vector])[0] 
+                epsS = np.sqrt(self.opt_params['penalty_ratio']*np.abs(opt_fx0 / penalty_value))
+                self.penalty_vector_list.append(epsS * penalty_vector)
+
+                return opt_step_size, True
+            return opt_step_size, False
+
     def run(self, x0, tol=None):
         self.opt_x = x0
         self.ndof = self.opt_x.size
         self.xgrad = np.zeros(self.ndof)
         self.prev_fx = np.inf
+        self.prev_fx_outer = np.inf
 
         if tol is None: tol = self.opt_params['opttol']
 
@@ -250,51 +286,51 @@ class BFGS(_Optimizer):
         inner_iter_count = 0
 
         if self.verbose > 0:
-                print(f"Starting optimization with x0 = {self.opt_x}")
+            print(f"Starting optimization with x0 = {self.opt_x}")
 
         while True: # outer loop - penalty reduction
             self.penalty_vector_list = [] # reset penalty vectors
-            self.opt_fx, self.xgrad, _ = self.optfunc(self.opt_x, get_grad=True, get_hess=False)
+            self.opt_fx, self.xgrad, _, __ = self.optfunc(self.opt_x, get_grad=True, get_hess=False)
 
             last_step_size = 1.0 
             Hinv = np.eye(self.ndof)
 
             inner_iter_count = 0 
-
+            
             if self.verbose > 0:
                 print(f"Outer iteration {outer_iter_count}, penalty_ratio = {self.opt_params['penalty_ratio']}, opt_fx = {self.opt_fx}")
 
             while True:
                 inner_iter_count += 1
 
-                if self.opt_params['verbose'] > 1:
+                if self.verbose > 1:
                     print(f"Inner iteration {inner_iter_count}, opt_fx = {self.opt_fx}")
 
                 BFGS_dir = - Hinv @ self.xgrad
                 nBFGS_dir = BFGS_dir / np.linalg.norm(BFGS_dir)
 
-                opt_step_size = self._line_search(nBFGS_dir, self.opt_x, self.opt_fx, self.xgrad, last_step_size) # Perform line search for step size 
-                
+                opt_step_size, feas_step_size = self._line_search(nBFGS_dir, self.opt_x, self.opt_fx, self.xgrad, last_step_size) # Perform line search for step size 
+                last_step_size, added_penalty = self._add_penalty(opt_step_size, last_step_size, feas_step_size, self.opt_x, nBFGS_dir, self.opt_fx) 
+
                 delta = opt_step_size * nBFGS_dir
                 old_grad = self.xgrad.copy()  # Save old gradient before update
                 self.opt_x += delta
 
-                new_opt_fx, new_grad, _ = self.optfunc(self.opt_x, get_grad=True, get_hess=False)
+                new_opt_fx, new_grad, _, __ = self.optfunc(self.opt_x, get_grad=True, get_hess=False, penalty_vectors=self.penalty_vector_list) # Get new function value and gradient
 
-                Hinv = self._update_Hinv(Hinv, new_grad, old_grad, delta) # Update Hessian inverse 
-                
+                Hinv = self._update_Hinv(Hinv, new_grad, old_grad, delta, reset=added_penalty) # Update Hessian inverse. If added_penalty, will reset.
                 self.opt_fx = new_opt_fx
                 self.xgrad = new_grad
 
                 if self._break_condition(inner_iter_count, 'inner'): break 
 
-            # if self._break_condition('outer'): break 
-            break
+            if self._break_condition(outer_iter_count, 'outer'): break 
+            self.prev_fx_outer = self.opt_fx
 
             outer_iter_count += 1
             self.opt_params['penalty_ratio'] *= self.opt_params['penalty_reduction']
             
-        return self.opt_x, self.xgrad, self.opt_fx
+        return self.opt_x, self.opt_fx, self.xgrad
 
 class Newton(_Optimizer):
     def __init__(self, *params):
