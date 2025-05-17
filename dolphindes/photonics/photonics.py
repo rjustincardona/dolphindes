@@ -99,6 +99,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
                      bloch_x, bloch_y,
                      sparseQCQP, A0, s0, c0)
         
+        self.Ndes = int(np.sum(des_mask)) # number of field degrees of freedom / pixels in design region
         self.FDFD = TM_FDFD(omega, Nx, Ny, Npmlx, Npmly, dl, bloch_x, bloch_y)
         self.QCQP = None # constructed later after the user specifies objective
     
@@ -117,18 +118,16 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             warnings.warn("If both ji and ei are specified then ji is ignored.")
         if self.ei is None:
             self.ei = self.FDFD.get_TM_field(self.ji, self.chi_background)
-        
-        Ndes = self.Ginv.shape[0]
-        
+
         if Pdiags=="global":
-            self.Pdiags = np.ones((Ndes,2), dtype=complex)
+            self.Pdiags = np.ones((self.Ndes,2), dtype=complex)
             self.Pdiags[:,1] = -1j
         else:
             raise ValueError("Not a valid Pdiags specification / needs implementation")
         
         if self.sparseQCQP: # rewrite later when sparse and dense QCQP classes are unified
             self.Ginv, self.M = self.FDFD.get_GaaInv(self.des_mask, self.chi_background)
-            A1 = np.conj(1.0/self.chi) * self.Ginv.conj().T - sp.eye(self.Ginv.shape[0], dtype=sp.csc_array)
+            A1 = np.conj(1.0/self.chi) * self.Ginv.conj().T - sp.eye(self.Ndes)
             A2 = self.Ginv
             self.QCQP = SparseSharedProjQCQP(self.A0, self.s0, self.c0,
                                             A1, A2, self.ei/2, 0.0, #c1 = 0.0, remove if c1 is patched out
