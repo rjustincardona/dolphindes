@@ -11,13 +11,15 @@ import scipy.sparse.linalg as spla
 import sksparse.cholmod 
 from .optimization import BFGS
 from collections import namedtuple
+from typing import Optional, Dict, Any, Tuple # For type hinting the new method
+
 
 class SparseSharedProjQCQP():
     """Represents a QCQP with a single type of constraint over projection regions.
 
     Problem is 
-    max_x -x^dagger A0 x + 2 Re (x^dagger s0) + c
-    s.t.  Re(-x^dagger A1 P_j A_2 x) + 2 Re (x^dagger A_2^dagger P_j^dagger s1) + c1 = 0
+    max_x -x^dagger A0 x + 2 Re (x^dagger s0) + c0
+    s.t.  Re(-x^dagger A1 P_j A_2 x) + 2 Re (x^dagger A_2^dagger P_j^dagger s1) = 0
 
     for a list of projection matrices P_j. 
 
@@ -27,7 +29,7 @@ class SparseSharedProjQCQP():
         The matrix A0 in the QCQP.
     s0 : np.ndarray
         The vector s in the QCQP.
-    c : float
+    c0 : float
         The constant c in the QCQP.
     A1 : scipy.sparse.csc_array
         The matrix A1 in the QCQP.
@@ -35,10 +37,9 @@ class SparseSharedProjQCQP():
         The matrix A2 in the QCQP.
     s1 : np.ndarray
         The vector s1 in the QCQP.
-    c1 : float
-        The constant c1 in the QCQP.
-    projections_diags : np.ndarray
-        The diagonal elements of the projection matrices P_j. The second one should always be one such that A0 + lambda A1 P_0 is positive semidefinite for sufficiently large constant lambda.
+    Pdiags : np.ndarray
+        The diagonal elements of the projection matrices P_j, as columns of a matrix Pdiags
+        The second column j should always be one such that A0 + lambda A1 P_j is positive semidefinite for sufficiently large constant lambda.
     verbose : float
         The verbosity level for debugging and logging.
     Achofac : sksparse.cholmod.Cholesky
@@ -50,17 +51,16 @@ class SparseSharedProjQCQP():
     current_hess : np.ndarray
         The current hess_lambda of the dual solution, which is only updated when the dual problem is solved. 
     """
-    def __init__(self, A0: sp.csc_array, s0: np.ndarray, c: float, A1: sp.csc_array, A2: sp.csc_array, 
-                 s1: np.ndarray, c1: float, projections_diags: np.ndarray, verbose: float = 0):
+    def __init__(self, A0: sp.csc_array, s0: np.ndarray, c0: float, A1: sp.csc_array, A2: sp.csc_array, 
+                 s1: np.ndarray, Pdiags: np.ndarray, verbose: float = 0):
         self.A0 = A0
         self.s0 = s0
         self.s1 = s1
-        self.c = c
+        self.c0 = c0
         self.A1 = A1
         self.A2 = A2
-        self.c1 = c1
         self.verbose = verbose
-        self.projections_diags = projections_diags
+        self.Pdiags = Pdiags
         self.Achofac = None
         self.current_dual = None 
         self.current_grad = None 
@@ -85,7 +85,12 @@ class SparseSharedProjQCQP():
         np.ndarray
             The diagonal elements of the combined projector matrix sum_j lag[j] P_j 
         """
-        return np.sum(lags[:, np.newaxis] * self.projections_diags, axis=0)
+
+        # lags is (N,), Pdiags is (N, M)
+        # lags[:, np.newaxis] makes lags (N, 1)
+        # Broadcasting then multiplies each row of Pdiags by the corresponding lag
+        # return np.sum(lags[:, np.newaxis] * self.Pdiags, axis=0)
+        return self.Pdiags @ lags
 
     def _get_total_A(self, P: sp.csc_array) -> sp.csc_array:
         """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given sum_j lag[j] P_j"""
@@ -103,7 +108,7 @@ class SparseSharedProjQCQP():
         sksparse.cholmod.Cholesky
             The updated cholesky factorization of the total A matrix.
         """
-        random_lags = np.random.rand(len(self.projections_diags))
+        random_lags = np.random.rand(self.Pdiags.shape[1])
         P = self._add_projectors(random_lags)
         A = self._get_total_A(sp.diags_array(P, format='csc'))
         if self.verbose > 1: print(f"analyzing A of format and shape {type(A)}, {A.shape} and # of nonzero elements '{A.count_nonzero()}")
@@ -132,16 +137,16 @@ class SparseSharedProjQCQP():
         # print('S', S)
         # print()
         x_star = Acho.solve_A(S)
-        Pdiag_list = self.projections_diags
-        grad_x = np.zeros(Pdiag_list.shape[0])
-        
+        grad_x = [] #np.zeros(Pdiag_list.shape[0])
+
         if get_xgrad:
             # grad_x_mat is a matrix containing the vectors b that require solving Ax=b for each lagrange multiplier
             # this is useful for the Hessian calculation. 
-            Warning("get_xgrad (needed for Hessian) is not tested!")
-            grad_x_mat = -self.A1 @ (x_star[:, None] * Pdiag_list[None, :]) + (self.s1[:, None] * Pdiag_list[None, :])
-            grad_x = Acho.solve_A(grad_x_mat)
-        
+            # Warning("get_xgrad (needed for Hessian) is not tested!")
+            # grad_x_mat = -self.A1 @ (x_star[:, None] * Pdiag_list[None, :]) + (self.s1[:, None] * Pdiag_list[None, :])
+            # grad_x = Acho.solve_A(grad_x_mat)
+            raise NotImplementedError("get_xgrad is not implemented yet. Use a first order method.")
+    
         return Acho, x_star, grad_x
         
     def get_dual(self, lags: np.ndarray, get_grad: bool = False, get_hess: bool = False, penalty_vectors: list = []) -> tuple[float, np.ndarray, np.ndarray]:
@@ -155,7 +160,7 @@ class SparseSharedProjQCQP():
             Whether to return the gradient of the dual with respect to the lagrange multipliers. Default is False.
         get_hess : bool, optional
             Whether to return the Hessian of the dual with respect to the lagrange multipliers. Default is False.
-        penalty_s : list, optional
+        penalty_vectors : list, optional
             A list of penalty vectors for the PSD boundary. If provided, the dual value and gradients will include a penalty term. Default is None.
         
         Returns
@@ -178,13 +183,20 @@ class SparseSharedProjQCQP():
         S = self._get_total_S(P)
 
         Acho, xstar, grad_x = self._get_xstar(A, S, get_xgrad = get_hess) # grad_x is needed for calculating the hessian. xstar is sufficient for the gradient. 
-        dualval = self.c + np.real(xstar.conjugate() @ A @ xstar) + np.sum(lags) * self.c1
+        dualval = self.c0 + np.real(xstar.conjugate() @ A @ xstar) 
         
         if get_grad: # This is grad_lambda (not grad_x)
-            # TODO(alessio): slow way. Verified, change to the fast way. 
-            grad = np.zeros(self.projections_diags.shape[0])
-            for i in range(len(grad)): 
-                grad[i] = -np.real(xstar.conj() @ self.A1 @ (self.projections_diags[i] * (self.A2 @ xstar))) + 2*np.real(xstar.conj() @ self.A2.T.conj() @ (self.projections_diags[i].T.conj() * self.s1))
+            A2_xstar = self.A2 @ xstar
+            # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar)))
+            # self.Pdiags has shape (N_diag, N_projectors), A2_xstar has shape (N_diag,)
+            # We want to multiply each column of Pdiags elementwise with A2_xstar
+            # Same method for term 2: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
+            term1 = -np.real(xstar.conj() @ self.A1 @ (self.Pdiags * A2_xstar[:, np.newaxis]))  # Shape: (N_diag, N_projectors)
+            term2 = 2 * np.real(A2_xstar.conj() @ (self.Pdiags.conj() * self.s1[:, np.newaxis]))  # Shape: (N_diag, N_projectors)
+            grad = term1 + term2
+
+            # Below is the for loop method for reference (slower)
+            # for i in range(len(grad)): grad[i] = -np.real(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))) + 2*np.real(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].T.conj() * self.s1))
 
         # Boundary penalty for the PSD boundary 
         dualval_penalty = 0.0 
@@ -192,13 +204,15 @@ class SparseSharedProjQCQP():
             penalty_matrix = np.column_stack(penalty_vectors)
             A_inv_penalty = Acho.solve_A(penalty_matrix)
             dualval_penalty += np.sum(np.real(A_inv_penalty.conj() * penalty_matrix)) # multiplies columns with columns, sums all at once
-            # print(A_inv_penalty)
-            # Again slow way. Fix once it is correct.
+
+            # Slow way. TODO(alessio): optimize this.
             if get_grad: 
                 grad_penalty = np.zeros(len(grad))
                 for j in range(penalty_matrix.shape[1]):
-                    for i in range(len(grad)):
-                        grad_penalty[i] += -np.real(A_inv_penalty[:, j].conj().T @ self.A1 @ (self.projections_diags[i] * (self.A2 @ A_inv_penalty[:, j])))
+                    grad_penalty += -np.real(A_inv_penalty[:, j].conj().T @ self.A1 @ (self.Pdiags * (self.A2 @ A_inv_penalty[:, j])[:, np.newaxis]))
+
+                    # for loop method
+                    # for i in range(len(grad)): grad_penalty[i] += -np.real(A_inv_penalty[:, j].conj().T @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ A_inv_penalty[:, j])))
 
         DualAux = namedtuple('DualAux', ['dualval_real', 'dualgrad_real', 'dualval_penalty', 'grad_penalty'])
         dual_aux = DualAux(dualval_real=dualval, dualgrad_real=grad, dualval_penalty=dualval_penalty, grad_penalty=grad_penalty)
@@ -269,7 +283,7 @@ class SparseSharedProjQCQP():
         init_lags : np.ndarray
             A set of Lagrange multipliers such that A is PSD.
         """
-        init_lags = np.random.random(self.projections_diags.shape[0]) * 1e-6  # Start with small positive lags
+        init_lags = np.random.random(self.Pdiags.shape[1]) * 1e-6  # Start with small positive lags
         init_lags[1] = start
         while self.is_dual_feasible(init_lags) is False:
             init_lags[1] *= 1.5
@@ -308,7 +322,47 @@ class SparseSharedProjQCQP():
         else: 
             raise ValueError(f"Unknown method '{method}' for solving the dual problem. Use newton or bfgs.")
 
+    def solve_primal_gurobi(self, gurobi_params: Optional[Dict[str, Any]] = None) -> Tuple[Optional[np.ndarray], Optional[float], str]:
+        """
+        Solves the primal QCQP problem using Gurobi by calling an external solver function.
+        This finds a global solution, and can be expensive, but can also quantify the duality gap. 
+        Requires a Gurobi installation and license. 
 
+        Parameters
+        ----------
+        gurobi_params : dict, optional
+            Parameters to pass to Gurobi (e.g., {'NonConvex': 2, 'TimeLimit': 3600}).
+
+        Returns
+        -------
+        x_optimal : np.ndarray
+            The optimal complex vector x, or None if not found.
+        obj_val : float
+            The optimal objective value, or None if not found.
+        status : str
+            The Gurobi optimization status.
+        
+        Raises
+        ------
+        ImportError
+            If the Gurobi solver module or GurobiPy itself cannot be imported.
+        """
+        raise NotImplementedError("Gurobi solver is not implemented yet.")
+    
+        Warning("Solving the primal problem is expensive! Are you sure you want to call this function?")
+
+        try:
+            # Import locally to avoid circular dependencies at module load time
+            # and to make Gurobi an optional dependency for qcqp.py
+            from .gurobi_solver import solve_sparse_qcqp_primal_with_gurobi
+        except ImportError as e:
+            raise ImportError(
+                "Could not import Gurobi solver components. "
+                "Ensure GurobiPy is installed."
+            ) from e
+            
+        return solve_sparse_qcqp_primal_with_gurobi(self, gurobi_params)
+    
 class DenseSharedProjQCQP():
     """Represents a QCQP with a single type of constraint over projection regions.
 

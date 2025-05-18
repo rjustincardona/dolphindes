@@ -11,7 +11,7 @@ def data_dir():
     return Path(os.path.dirname(__file__)) / "reference_arrays" / "qcqp_example"
 
 @pytest.mark.parametrize("added_str", ['global', 'local'])
-def test_qcqp(data_dir, added_str):
+def test_sparse_qcqp(data_dir, added_str):
     """ 
     Test QCQP optimization with BFGS, and compare with optimized lags and results. This doesn't combine Lags into projectors, so gradients and penalties should be the same 
     as known cases. 
@@ -34,11 +34,12 @@ def test_qcqp(data_dir, added_str):
     interleaved[0::2] = projections_diags
     interleaved[1::2] = projections_diags * -1j
     projections_diags = interleaved
+    Pdiags = projections_diags.T
 
     c = np.load(data / 'ldos_dualconst.npy', allow_pickle=True)
     c1 = 0.0 
 
-    sparse_ldos_qcqp = SparseSharedProjQCQP(A0, s0, c, A1, A2, s1, c1, projections_diags, verbose=0)
+    sparse_ldos_qcqp = SparseSharedProjQCQP(A0, s0, c, A1, A2, s1, Pdiags, verbose=0)
     combined_projector = sp.diags(sparse_ldos_qcqp._add_projectors(lags))
 
     print("Testing totalA = known total A")
@@ -83,3 +84,6 @@ def test_qcqp(data_dir, added_str):
 
     assert np.allclose(dual_lambda, lags_optimal, atol=1e-4), "Dual lambda does not match optimal lags."
     assert np.allclose(current_dual, dual_opt, atol=1e-4), "Dual values does not match optimal value."
+
+    # print('Testing Gurobi solution of the primal problem.')
+    # solution = sparse_ldos_qcqp.solve_primal_gurobi()
