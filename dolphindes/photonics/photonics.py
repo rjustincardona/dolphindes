@@ -80,7 +80,7 @@ class Photonics_FDFD():
         self.ei = ei
         self.chi_background = chi_background
         
-        self.sparseQCQP = self.sparseQCQP
+        self.sparseQCQP = sparseQCQP
         self.A0 = A0
         self.s0 = s0
         self.c0 = c0
@@ -94,7 +94,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
                  bloch_x=0.0, bloch_y=0.0, # FDFD solver attr
                  sparseQCQP=True, A0=None, s0=None, c0=0.0): # design problem attr
         
-        super().__init(omega, Nx, Ny, Npmlx, Npmly, dl, dl,
+        super().__init__(omega, Nx, Ny, Npmlx, Npmly, dl, dl,
                      chi, des_mask, ji, ei,
                      bloch_x, bloch_y,
                      sparseQCQP, A0, s0, c0)
@@ -129,8 +129,8 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             self.Ginv, self.M = self.FDFD.get_GaaInv(self.des_mask, self.chi_background)
             A1 = np.conj(1.0/self.chi) * self.Ginv.conj().T - sp.eye(self.Ndes)
             A2 = self.Ginv
-            self.QCQP = SparseSharedProjQCQP(self.A0, self.s0, self.c0,
-                                            A1, A2, self.ei/2, 0.0, #c1 = 0.0, remove if c1 is patched out
+            self.QCQP = SparseSharedProjQCQP(self.A0, self.s0, self.c0, 
+                                            A1, A2, self.ei.flatten()/2, 
                                             self.Pdiags, verbose
                                             )
         else:
