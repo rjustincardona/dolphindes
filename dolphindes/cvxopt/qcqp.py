@@ -134,8 +134,6 @@ class SparseSharedProjQCQP():
 
         """
         Acho = self.Achofac.cholesky(A)
-        # print('S', S)
-        # print()
         x_star = Acho.solve_A(S)
         grad_x = [] #np.zeros(Pdiag_list.shape[0])
 
@@ -196,7 +194,9 @@ class SparseSharedProjQCQP():
             grad = term1 + term2
 
             # Below is the for loop method for reference (slower)
-            # for i in range(len(grad)): grad[i] = -np.real(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))) + 2*np.real(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].T.conj() * self.s1))
+            # grad = np.zeros(self.Pdiags.shape[1])
+            # for i in range(len(grad)): 
+            #     grad[i] = -np.real(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))) + 2*np.real(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].T.conj() * self.s1))
 
         # Boundary penalty for the PSD boundary 
         dualval_penalty = 0.0 
@@ -205,14 +205,14 @@ class SparseSharedProjQCQP():
             A_inv_penalty = Acho.solve_A(penalty_matrix)
             dualval_penalty += np.sum(np.real(A_inv_penalty.conj() * penalty_matrix)) # multiplies columns with columns, sums all at once
 
-            # Slow way. TODO(alessio): optimize this.
             if get_grad: 
                 grad_penalty = np.zeros(len(grad))
                 for j in range(penalty_matrix.shape[1]):
                     grad_penalty += -np.real(A_inv_penalty[:, j].conj().T @ self.A1 @ (self.Pdiags * (self.A2 @ A_inv_penalty[:, j])[:, np.newaxis]))
 
                     # for loop method
-                    # for i in range(len(grad)): grad_penalty[i] += -np.real(A_inv_penalty[:, j].conj().T @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ A_inv_penalty[:, j])))
+                    # for i in range(len(grad)): 
+                    #     grad_penalty[i] += -np.real(A_inv_penalty[:, j].conj().T @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ A_inv_penalty[:, j])))
 
         DualAux = namedtuple('DualAux', ['dualval_real', 'dualgrad_real', 'dualval_penalty', 'grad_penalty'])
         dual_aux = DualAux(dualval_real=dualval, dualgrad_real=grad, dualval_penalty=dualval_penalty, grad_penalty=grad_penalty)
@@ -347,7 +347,7 @@ class SparseSharedProjQCQP():
         ImportError
             If the Gurobi solver module or GurobiPy itself cannot be imported.
         """
-        raise NotImplementedError("Gurobi solver is not implemented yet.")
+        # raise NotImplementedError("Gurobi solver is not implemented yet.")
     
         Warning("Solving the primal problem is expensive! Are you sure you want to call this function?")
 
