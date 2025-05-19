@@ -310,7 +310,7 @@ class SparseSharedProjQCQP():
             opt_params = {'opttol': 1e-2, 'gradConverge': False, 'min_inner_iter': 5, 'max_restart': np.inf, 'penalty_ratio': 1e-2, 'penalty_reduction': 0.1, 'break_iter_period': 20, 'verbose': self.verbose-1, 'penalty_vector_list': []}
 
         if init_lags is None:
-            init_lags = self.find_initial_feasible_point()
+            init_lags = self.find_feasible_lags()
 
         if method == 'newton':
             raise NotImplementedError("SparseSharedProjQCQP cannot use Newton's method yet.")
