@@ -108,14 +108,18 @@ class Photonics_TM_FDFD(Photonics_FDFD):
                  sparseQCQP=True, A0=None, s0=None, c0=0.0): # design problem attr
         
         super().__init__(omega, chi, Nx, Ny, Npmlx, Npmly, dl, dl,
-                         des_mask, ji, ei,
+                         des_mask, ji, ei, chi_background,
                          bloch_x, bloch_y,
                          sparseQCQP, A0, s0, c0)
         
         self.dl = dl
         
+        self.des_mask = None
+        self.Ginv = None
+        self.M = None
+        
 
-    def setup_FDFD(self, omega=None, Nx=None, Ny=None, Npmlx=None, Npmly=None, dl=None, bloch_x=None, bloch_y=None, des_mask=None):
+    def setup_FDFD(self, omega=None, Nx=None, Ny=None, Npmlx=None, Npmly=None, dl=None, bloch_x=None, bloch_y=None):
         """
         setup the FDFD solver. non-None arguments will define / modify corresponding attributes
         """
@@ -125,15 +129,25 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             if param_value is not None:
                 setattr(self, param_name, param_value)
 
-        check_attributes(self, 'Nx', 'Ny', 'Npmlx', 'Npmly', 'dl', 'bloch_x', 'bloch_y', 'des_mask')
+        check_attributes(self, 'Nx', 'Ny', 'Npmlx', 'Npmly', 'dl', 'bloch_x', 'bloch_y')
         self.FDFD = TM_FDFD(self.omega, self.Nx, self.Ny, self.Npmlx, self.Npmly, self.dl, self.bloch_x, self.bloch_y)
-        
+    
+    
+    def setup_EM_operators(self):
+        """
+        setup EM operators associated with the given design region and background
+        """
+        check_attributes(self, 'des_mask')
+        if self.sparseQCQP:
+            self.Ginv, self.M = self.FDFD.get_GaaInv(self.des_mask, self.chi_background)
+        else:
+            raise ValueError("dense QCQP not implemented yet")
     
     def setup_QCQP(self, Pdiags="global", verbose: float = 0):
         """
         
         """
-        check_attributes(self, 'des_mask', 'A0', 's0', 'c0', 'Pdiags')
+        check_attributes(self, 'des_mask', 'A0', 's0', 'c0')
         
         self.Ndes = int(np.sum(self.des_mask)) # number of field degrees of freedom / pixels in design region
         
@@ -152,11 +166,13 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             raise ValueError("Not a valid Pdiags specification / needs implementation")
         
         if self.sparseQCQP: # rewrite later when sparse and dense QCQP classes are unified
-            self.Ginv, self.M = self.FDFD.get_GaaInv(self.des_mask, self.chi_background)
+            if (self.Ginv is None) or (self.M is None):
+                self.setup_EM_operators()
+            
             A1 = np.conj(1.0/self.chi) * self.Ginv.conj().T - sp.eye(self.Ndes)
             A2 = self.Ginv
             self.QCQP = SparseSharedProjQCQP(self.A0, self.s0, self.c0, 
-                                            A1, A2, self.ei.flatten()/2, 
+                                            A1, A2, self.ei[self.des_mask]/2, 
                                             self.Pdiags, verbose
                                             )
         else:
