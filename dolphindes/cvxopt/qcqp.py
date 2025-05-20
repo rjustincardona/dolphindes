@@ -53,12 +53,12 @@ class SparseSharedProjQCQP():
     """
     def __init__(self, A0: sp.csc_array, s0: np.ndarray, c0: float, A1: sp.csc_array, A2: sp.csc_array, 
                  s1: np.ndarray, Pdiags: np.ndarray, verbose: float = 0):
-        self.A0 = A0
+        self.A0 = sp.csr_array(A0)
         self.s0 = s0
         self.s1 = s1
         self.c0 = c0
-        self.A1 = A1
-        self.A2 = A2
+        self.A1 = sp.csr_array(A1)
+        self.A2 = sp.csr_array(A2)
         self.verbose = verbose
         self.Pdiags = Pdiags
         self.Achofac = None
@@ -66,8 +66,17 @@ class SparseSharedProjQCQP():
         self.current_grad = None 
         self.current_hess = None
 
+        # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
+        self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
+        for i in range(self.Pdiags.shape[1]):
+            self.precomputed_As[i] = self._Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
+        
+        print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
         self._update_chofac()
-
+        
+    def __repr__(self):
+        return f"SparseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
+    
     def _Sym(self, A: sp.csc_array) -> sp.csc_array:
         """Gets the symmetric part of A"""
         return (A + A.T.conj()) / 2
@@ -85,20 +94,15 @@ class SparseSharedProjQCQP():
         np.ndarray
             The diagonal elements of the combined projector matrix sum_j lag[j] P_j 
         """
-
-        # lags is (N,), Pdiags is (N, M)
-        # lags[:, np.newaxis] makes lags (N, 1)
-        # Broadcasting then multiplies each row of Pdiags by the corresponding lag
-        # return np.sum(lags[:, np.newaxis] * self.Pdiags, axis=0)
         return self.Pdiags @ lags
 
-    def _get_total_A(self, P: sp.csc_array) -> sp.csc_array:
+    def _get_total_A(self, lags: np.ndarray) -> sp.csc_array:
         """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given sum_j lag[j] P_j"""
-        return self.A0 + self._Sym(self.A1 @ P @ self.A2)
+        return self.A0 + sum(lags[i] * self.precomputed_As[i] for i in range(len(lags)))
     
-    def _get_total_S(self, P: sp.csc_array) -> np.ndarray:
+    def _get_total_S(self, Pdiag: np.ndarray) -> np.ndarray:
         """Gets the total S vector for the QCQP = s0 + sum_j lag[j] P_j^dagger s1 given P = sum_j lag[j] P_j"""
-        return self.s0 + self.A2.T.conj() @ P.T.conj() @ self.s1 
+        return self.s0 + self.A2.T.conj() @ (Pdiag.conj() * self.s1)
 
     def _update_chofac(self) -> sksparse.cholmod.Factor:
         """Updates the cholesky factorization of the total A
@@ -109,13 +113,13 @@ class SparseSharedProjQCQP():
             The updated cholesky factorization of the total A matrix.
         """
         random_lags = np.random.rand(self.Pdiags.shape[1])
-        P = self._add_projectors(random_lags)
-        A = self._get_total_A(sp.diags_array(P, format='csc'))
+        # P = self._add_projectors(random_lags)
+        A = self._get_total_A(random_lags)
         if self.verbose > 1: print(f"analyzing A of format and shape {type(A)}, {A.shape} and # of nonzero elements '{A.count_nonzero()}")
         self.Achofac = sksparse.cholmod.analyze(A)
         return self.Achofac
 
-    def _get_xstar(self, A: sp.csc_array, S: np.ndarray, get_xgrad: bool = False) -> tuple[sksparse.cholmod.Factor, np.ndarray, np.ndarray]:
+    def _get_xstar(self, lags: np.ndarray, get_xgrad: bool = False) -> tuple[sksparse.cholmod.Factor, np.ndarray, np.ndarray]:
         """For a total A and S, solve for xstar using the cholesky factorization of A
         
         For a given set of Lagrange multipliers, which define A and S, the x_star that maximizes the Lagrangian 
@@ -133,8 +137,16 @@ class SparseSharedProjQCQP():
             The gradient of the Lagrangian with respect to x_star, if requested (otherwise empty array)
 
         """
+
+        P_diag = self._add_projectors(lags)
+        # P = sp.diags_array(P_diag, format='csc')
+        A = self._get_total_A(lags)
+        S = self._get_total_S(P_diag)
+
         Acho = self.Achofac.cholesky(A)
         x_star = Acho.solve_A(S)
+        xAx = np.real(x_star.conjugate() @ A @ x_star) 
+
         grad_x = [] #np.zeros(Pdiag_list.shape[0])
 
         if get_xgrad:
@@ -145,7 +157,7 @@ class SparseSharedProjQCQP():
             # grad_x = Acho.solve_A(grad_x_mat)
             raise NotImplementedError("get_xgrad is not implemented yet. Use a first order method.")
     
-        return Acho, x_star, grad_x
+        return Acho, x_star, xAx, grad_x
         
     def get_dual(self, lags: np.ndarray, get_grad: bool = False, get_hess: bool = False, penalty_vectors: list = []) -> tuple[float, np.ndarray, np.ndarray]:
         """Gets the dual value and the derivatives of the dual with respect to Lagrange multipliers.
@@ -175,28 +187,23 @@ class SparseSharedProjQCQP():
         grad, hess = [], []
         grad_penalty, hess_penalty = [], []
 
-        P_diag = self._add_projectors(lags)
-        P = sp.diags_array(P_diag)
-        A = self._get_total_A(P)
-        S = self._get_total_S(P)
-
-        Acho, xstar, grad_x = self._get_xstar(A, S, get_xgrad = get_hess) # grad_x is needed for calculating the hessian. xstar is sufficient for the gradient. 
-        dualval = self.c0 + np.real(xstar.conjugate() @ A @ xstar) 
+        Acho, xstar, dualval, grad_x = self._get_xstar(lags, get_xgrad = get_hess) # grad_x is needed for calculating the hessian. xstar is sufficient for the gradient. 
+        dualval += self.c0
         
         if get_grad: # This is grad_lambda (not grad_x)
-            A2_xstar = self.A2 @ xstar
-            # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar)))
+            # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))). Second term: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
             # self.Pdiags has shape (N_diag, N_projectors), A2_xstar has shape (N_diag,)
-            # We want to multiply each column of Pdiags elementwise with A2_xstar
-            # Same method for term 2: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
-            term1 = -np.real(xstar.conj() @ self.A1 @ (self.Pdiags * A2_xstar[:, np.newaxis]))  # Shape: (N_diag, N_projectors)
-            term2 = 2 * np.real(A2_xstar.conj() @ (self.Pdiags.conj() * self.s1[:, np.newaxis]))  # Shape: (N_diag, N_projectors)
+            # We want to multiply each column of Pdiags elementwise with A2_xstar. With broadcasting, we get 
+            # However, we know that sum_i w_i A_ij v_i = sum_i (w_i * v_i) A_ij. LHS is expression right below, RHS is below so we avoid dense intermediate matrices. 
+            A2_xstar = self.A2 @ xstar      # Shape: (N_p,)
+            x_conj_A1 = xstar.conj() @ self.A1  # Shape: (N_p,) where N_p = self.A1.shape[1]
+            # term1 = -np.real((xstar.conj() @ self.A1) @ (self.Pdiags * A2_xstar[:, np.newaxis]))  # Shape: (N_diag, N_projectors)
+            term1 = -np.real( (x_conj_A1 * A2_xstar) @ self.Pdiags )
+
+            # term2 = 2 * np.real(A2_xstar.conj() @ (self.Pdiags.conj() * self.s1[:, np.newaxis])) #. Same as above. 
+            term2 = 2 * np.real( (A2_xstar.conj() * self.s1) @ self.Pdiags.conj() )
             grad = term1 + term2
 
-            # Below is the for loop method for reference (slower)
-            # grad = np.zeros(self.Pdiags.shape[1])
-            # for i in range(len(grad)): 
-            #     grad[i] = -np.real(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))) + 2*np.real(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].T.conj() * self.s1))
 
         # Boundary penalty for the PSD boundary 
         dualval_penalty = 0.0 
@@ -208,11 +215,13 @@ class SparseSharedProjQCQP():
             if get_grad: 
                 grad_penalty = np.zeros(len(grad))
                 for j in range(penalty_matrix.shape[1]):
-                    grad_penalty += -np.real(A_inv_penalty[:, j].conj().T @ self.A1 @ (self.Pdiags * (self.A2 @ A_inv_penalty[:, j])[:, np.newaxis]))
+                    # slow: for i in range(len(grad)): grad_penalty[i] += -np.real(A_inv_penalty[:, j].conj().T @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ A_inv_penalty[:, j]))) # for loop method
+                    # fast: grad_penalty += -np.real((A_inv_penalty[:, j].conj().T @ self.A1) @ (self.Pdiags * (self.A2 @ A_inv_penalty[:, j])[:, np.newaxis]))
 
-                    # for loop method
-                    # for i in range(len(grad)): 
-                    #     grad_penalty[i] += -np.real(A_inv_penalty[:, j].conj().T @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ A_inv_penalty[:, j])))
+                    # Same as above (fastest)
+                    A_inv_penalty_j_A1 = A_inv_penalty[:, j].conj().T @ self.A1  
+                    A2_A_inv_penalty_j = self.A2 @ A_inv_penalty[:, j]  # Shape: (N_p,)
+                    grad_penalty += -np.real( (A_inv_penalty_j_A1 * A2_A_inv_penalty_j) @ self.Pdiags ) 
 
         DualAux = namedtuple('DualAux', ['dualval_real', 'dualgrad_real', 'dualval_penalty', 'grad_penalty'])
         dual_aux = DualAux(dualval_real=dualval, dualgrad_real=grad, dualval_penalty=dualval_penalty, grad_penalty=grad_penalty)
@@ -237,7 +246,7 @@ class SparseSharedProjQCQP():
         eigv : np.ndarray
             Eigenvector corresponding to the lowest eigenvalue of A(lags)
         """
-        A = self._get_total_A(sp.diags_array(self._add_projectors(lags)))
+        A = self._get_total_A(lags)
         eigw, eigv = spla.eigsh(A, k=1, sigma=0.0, which='LM', return_eigenvectors=True)
         aux = eigw
         return eigv[:,0], aux
@@ -257,9 +266,9 @@ class SparseSharedProjQCQP():
         bool
             True if the total A matrix is positive semidefinite (dual feasible).
         """
-        P_diag = self._add_projectors(lags)
-        P = sp.diags_array(P_diag)
-        A = self._get_total_A(P)
+        # P_diag = self._add_projectors(lags)
+        # P = sp.diags_array(P_diag)
+        A = self._get_total_A(lags)
         try:
             Acho = self.Achofac.cholesky(A)
             tmp = Acho.L() # Have to access the factor for the decomposition to be actually done. 

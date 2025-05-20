@@ -40,11 +40,11 @@ def test_sparse_qcqp(data_dir, added_str):
     c1 = 0.0 
 
     sparse_ldos_qcqp = SparseSharedProjQCQP(A0, s0, c, A1, A2, s1, Pdiags, verbose=0)
-    combined_projector = sp.diags(sparse_ldos_qcqp._add_projectors(lags))
+    combined_projector = sparse_ldos_qcqp._add_projectors(lags)
 
     print("Testing totalA = known total A")
     ref_totalA = sp.load_npz(data / 'ldos_sparse_totalA.npz')
-    calc_totalA = sparse_ldos_qcqp._get_total_A(combined_projector)
+    calc_totalA = sparse_ldos_qcqp._get_total_A(lags)
     assert sp.issparse(calc_totalA), "Total A should be a sparse matrix."
     assert sp.csr_array(calc_totalA).shape == ref_totalA.shape, "Shape of calculated total A does not match reference."
     assert np.allclose(calc_totalA.toarray(), ref_totalA.toarray()), "Calculated total A does not match reference total A."
@@ -66,6 +66,7 @@ def test_sparse_qcqp(data_dir, added_str):
     dual_opt, grad_opt, hess_opt, aux_opt = sparse_ldos_qcqp.get_dual(lags_optimal, get_grad=True)
     assert dual is not None
     print(f'optimal dual : {dual_opt}')
+    print(np.load(data / 'ldos_dualval.npy'))
     assert np.allclose(dual_opt, np.load(data / 'ldos_dualval.npy'), atol=1e-6), "Dual values do not match."
     assert np.allclose(grad_opt, np.load(data / 'ldos_optgrad.npy'), atol=1e-6), "Gradients do not match."
 
@@ -76,7 +77,7 @@ def test_sparse_qcqp(data_dir, added_str):
     assert np.allclose(aux_opt_penalty.dualval_penalty, np.load(data / 'ldos_dualval_penalty.npy'), atol=1e-6), "Penalty dual values do not match."
     assert np.allclose(aux_opt_penalty.grad_penalty, np.load(data / 'ldos_grad_penalty.npy'), atol=1e-6), "Penalty gradients do not match."
 
-    print("Testing optimization with BFGS to correct value")
+    # print("Testing optimization with BFGS to correct value")
     current_dual, dual_lambda, current_grad, current_hess = sparse_ldos_qcqp.solve_current_dual_problem('bfgs', init_lags = init_lags)
 
     print(f'dual lambda: {dual_lambda}')
