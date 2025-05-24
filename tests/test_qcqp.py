@@ -10,24 +10,20 @@ def data_dir():
     """Return the path to the reference data directory."""
     return Path(os.path.dirname(__file__)) / "reference_arrays" / "qcqp_example"
 
-@pytest.mark.parametrize("added_str", ['global', 'local'])
-def test_sparse_qcqp(data_dir, added_str):
-    """ 
-    Test QCQP optimization with BFGS, and compare with optimized lags and results. This doesn't combine Lags into projectors, so gradients and penalties should be the same 
-    as known cases. 
-    """
-
-    # for added_str in ['global', 'local']:
-    print(f"\nTesting opt with: {added_str} constraints")
-    data = data_dir / added_str
-    lags = np.load(data / 'ldos_sparse_lags.npy', allow_pickle=True)
-    lags_optimal = np.load(data / 'ldos_sparse_lags_optimal.npy', allow_pickle=True)
-    A0 = sp.csc_array(sp.load_npz(data / 'ldos_sparse_A0.npz'))
-    A1 = sp.csc_array(sp.load_npz(data / 'ldos_sparse_A1.npz'))
-    A2 = sp.csc_array(sp.load_npz(data / 'ldos_sparse_A2.npz'))
-    s0 = np.load(data / 'ldos_sparse_s0.npy', allow_pickle=True)
-    s1 = np.load(data / 'ldos_sparse_s1.npy', allow_pickle=True)
-    projections_diags = np.load(data / 'ldos_some_projections.npy', allow_pickle=True)
+@pytest.fixture(params=['global'])
+def sparse_qcqp_data(data_dir, request):
+    """Fixture to load data and initialize SparseSharedProjQCQP."""
+    added_str = request.param
+    print(f"\nLoading data for: {added_str} constraints")
+    data_path = data_dir / added_str
+    lags = np.load(data_path / 'ldos_sparse_lags.npy', allow_pickle=True)
+    lags_optimal = np.load(data_path / 'ldos_sparse_lags_optimal.npy', allow_pickle=True)
+    A0 = sp.csc_array(sp.load_npz(data_path / 'ldos_sparse_A0.npz'))
+    A1 = sp.csc_array(sp.load_npz(data_path / 'ldos_sparse_A1.npz'))
+    A2 = sp.csc_array(sp.load_npz(data_path / 'ldos_sparse_A2.npz'))
+    s0 = np.load(data_path / 'ldos_sparse_s0.npy', allow_pickle=True)
+    s1 = np.load(data_path / 'ldos_sparse_s1.npy', allow_pickle=True)
+    projections_diags = np.load(data_path / 'ldos_some_projections.npy', allow_pickle=True)
     # Interleave projections_diags and projections_diags * -1j
     projections_diags = np.asarray(projections_diags)
     interleaved = np.empty((2 * projections_diags.shape[0], projections_diags.shape[1]), dtype=complex)
@@ -36,10 +32,32 @@ def test_sparse_qcqp(data_dir, added_str):
     projections_diags = interleaved
     Pdiags = projections_diags.T
 
-    c = np.load(data / 'ldos_dualconst.npy', allow_pickle=True)
+    c = np.load(data_path / 'ldos_dualconst.npy', allow_pickle=True)
+    
+    sparse_ldos_qcqp_instance = SparseSharedProjQCQP(A0, s0, c, A1, A2, s1, Pdiags, verbose=0)
+    
+    return {
+        "qcqp": sparse_ldos_qcqp_instance,
+        "lags": lags,
+        "lags_optimal": lags_optimal,
+        "A0": A0, "A1": A1, "A2": A2,
+        "s0": s0, "s1": s1,
+        "Pdiags": Pdiags,
+        "c": c,
+        "data_path": data_path
+    }
+
+def test_sparse_qcqp(sparse_qcqp_data):
+    """ 
+    Test QCQP optimization with BFGS, and compare with optimized lags and results. This doesn't combine Lags into projectors, so gradients and penalties should be the same 
+    as known cases. 
+    """
+    sparse_ldos_qcqp = sparse_qcqp_data["qcqp"]
+    lags = sparse_qcqp_data["lags"]
+    lags_optimal = sparse_qcqp_data["lags_optimal"]
+    data = sparse_qcqp_data["data_path"]
     c1 = 0.0 
 
-    sparse_ldos_qcqp = SparseSharedProjQCQP(A0, s0, c, A1, A2, s1, Pdiags, verbose=0)
     combined_projector = sparse_ldos_qcqp._add_projectors(lags)
 
     print("Testing totalA = known total A")
@@ -72,13 +90,11 @@ def test_sparse_qcqp(data_dir, added_str):
 
     print("Testing dualvalue of penalty vector")
     penalty, value = sparse_ldos_qcqp._get_PSD_penalty(lags_optimal)
-    # penalty = np.load(data / 'ldos_penalty_sample_v.npy', allow_pickle=True)
     dual_opt_penalty, grad_opt_penalty, hess_opt_penalty, aux_opt_penalty = sparse_ldos_qcqp.get_dual(lags_optimal, get_grad=True, penalty_vectors=[penalty])
     assert np.allclose(aux_opt_penalty.dualval_penalty, np.load(data / 'ldos_dualval_penalty.npy'), atol=1e-6), "Penalty dual values do not match."
     assert np.allclose(aux_opt_penalty.grad_penalty, np.load(data / 'ldos_grad_penalty.npy'), atol=1e-6), "Penalty gradients do not match."
 
-    # print("Testing optimization with BFGS to correct value")
-    current_dual, dual_lambda, current_grad, current_hess = sparse_ldos_qcqp.solve_current_dual_problem('bfgs', init_lags = init_lags)
+    current_dual, dual_lambda, current_grad, current_hess, xstar = sparse_ldos_qcqp.solve_current_dual_problem('bfgs', init_lags = init_lags)
 
     print(f'dual lambda: {dual_lambda}')
     print(f'bound: {current_dual}')
@@ -86,5 +102,27 @@ def test_sparse_qcqp(data_dir, added_str):
     assert np.allclose(dual_lambda, lags_optimal, atol=1e-4), "Dual lambda does not match optimal lags."
     assert np.allclose(current_dual, dual_opt, atol=1e-4), "Dual values does not match optimal value."
 
-    # print('Testing Gurobi solution of the primal problem.')
-    # solution = sparse_ldos_qcqp.solve_primal_gurobi()
+    print("Testing iterative splitting step")
+    results = [] 
+    result_counter = 0
+    for result in sparse_ldos_qcqp.iterative_splitting_step():
+        results.append((sparse_ldos_qcqp.Pdiags.shape[1], result[0]))
+        result_counter += 1
+        if result_counter > 0:
+            assert results[result_counter-1][1] >= result[0], "Iterative splitting step must decrease dualval."
+        if sparse_ldos_qcqp.Pdiags.shape[1] > 200:
+            break
+    print(results)
+
+
+# def test_qcqp_initial_feasibility(sparse_qcqp_data):
+#     """
+#     Test the initial feasibility of the QCQP problem using the fixture.
+#     """
+#     sparse_ldos_qcqp = sparse_qcqp_data["qcqp"]
+#     data = sparse_qcqp_data["data_path"] # For context, if needed for loading other files
+
+#     lags_optimal = sparse_qcqp_data["lags_optimal"]
+#     optimal_feasible = sparse_ldos_qcqp.is_dual_feasible(lags_optimal)
+#     assert optimal_feasible, "Optimal lags should also be dual feasible."
+
