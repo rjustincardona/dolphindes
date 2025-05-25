@@ -79,6 +79,10 @@ class SparseSharedProjQCQP():
         
     def __repr__(self):
         return f"SparseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
+
+    def get_number_constraints(self) -> int:
+        """Returns the number of constraints in the QCQP"""
+        return self.Pdiags.shape[1]
     
     def _Sym(self, A: sp.csc_array) -> sp.csc_array:
         """Gets the symmetric part of A"""
@@ -359,9 +363,6 @@ class SparseSharedProjQCQP():
         assert np.all(self.Pdiags[:, 0] == 1), "The zeroth projector must contain all ones (identity)"
         assert np.all(np.isclose(self.Pdiags[:, 1], -1j)), "The second projector must contain all -1j values (-1j * identity)"
 
-        if self.verbose > 0:
-            print(f"Refining projectors. Initial number of projectors: {self.Pdiags.shape[1]}")
-
         new_Pdiags_cols = []
         new_lags_list = []
         # for i in range(self.Pdiags.shape[1]):
@@ -417,7 +418,7 @@ class SparseSharedProjQCQP():
         self.Pdiags = np.column_stack(new_Pdiags_cols)
         self.current_lags = np.array(new_lags_list)
 
-        if self.verbose > 0: print(f"Refinement complete. New number of projectors: {self.Pdiags.shape[1]}")
+        # if self.verbose > 0: print(f"Refinement complete. New number of projectors: {self.Pdiags.shape[1]}")
         # for i in range(self.Pdiags.shape[1]):
         #     print(f"Projector {i}: {self.Pdiags[:, i]}")
         # print(self.current_lags)
