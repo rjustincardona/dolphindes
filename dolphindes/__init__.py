@@ -24,5 +24,5 @@ maxwell
 
 """
 
-__all__ = []
+__all__ = ['photonics', 'util']
 
