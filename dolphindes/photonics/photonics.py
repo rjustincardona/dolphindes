@@ -10,17 +10,11 @@ import numpy as np
 import scipy.sparse as sp
 from dolphindes.cvxopt import SparseSharedProjQCQP
 from dolphindes.maxwell import TM_FDFD
-
+from dolphindes.util import check_attributes
+from typing import Tuple 
 import warnings
 
-
-
-def check_attributes(self, *attrs):
-    ### maybe this helper function for lazy initialization can also be useful elsewhere?
-    missing = [attr for attr in attrs if getattr(self, attr) is None]
-    if missing:
-        raise AttributeError(f"{', '.join(missing)} undefined.")
-
+import warnings
 
 class Photonics_FDFD():
     """
@@ -39,7 +33,7 @@ class Photonics_FDFD():
         Number of pixels along the y direction.
     Npmlx : int
         Size of the x direction PML in pixels.
-    Npmly : TYPE
+    Npmly : int
         Size of the y direction PML in pixels.
     dx : float
         Finite difference grid pixel size in x direction, in units of 1.
@@ -99,26 +93,56 @@ class Photonics_FDFD():
         self.c0 = c0
         self.Pdiags = Pdiags
         
-        
 
 class Photonics_TM_FDFD(Photonics_FDFD):
-    def __init__(self, omega, chi=None, Nx=None, Ny=None, Npmlx=None, Npmly=None, dl=None, # FDFD solver attr
-                 des_mask=None, ji=None, ei=None, chi_background=None,# design problem attr
+    def __init__(self, omega, chi=None, 
+                 grid_size : Tuple[int, int] = (None, None), 
+                 pml_size : Tuple[int, int] = (None, None), 
+                 dl=None, # FDFD solver attr
+                 des_mask : np.ndarray = None, ji : np.ndarray = None, 
+                 ei : np.ndarray = None, chi_background : np.ndarray = None, # design problem attr
                  bloch_x=0.0, bloch_y=0.0, # FDFD solver attr
                  sparseQCQP=True, A0=None, s0=None, c0=0.0): # design problem attr
         
+        Nx, Ny = grid_size
+        Npmlx, Npmly = pml_size
+        self.dl = dl
+        self.des_mask = des_mask
+        self.Ginv = None
+        self.M = None
+
         super().__init__(omega, chi, Nx, Ny, Npmlx, Npmly, dl, dl,
                          des_mask, ji, ei, chi_background,
                          bloch_x, bloch_y,
                          sparseQCQP, A0, s0, c0)
         
-        self.dl = dl
-        
-        self.des_mask = None
-        self.Ginv = None
-        self.M = None
-        
+        try:
+            check_attributes(self, 'omega', 'chi', 'Nx', 'Ny', 'Npmlx', 'Npmly', 'des_mask', 'chi_background', 'bloch_x', 'bloch_y')
+            self.setup_FDFD()
+            self.setup_EM_operators()
+            
+        except AttributeError as e:
+            warnings.warn(f"Photonics_TM_FDFD initialized with missing attributes (lazy initialization). We strongly recommend passing all arguments for expected behavior.")
 
+    def __repr__(self):
+        return (f"Photonics_TM_FDFD(omega={self.omega}, chi={self.chi}, Nx={self.Nx}, "
+                f"Ny={self.Ny}, Npmlx={self.Npmlx}, Npmly={self.Npmly}, dl={self.dl}, "
+                f"des_mask={self.des_mask is not None}, ji={self.ji is not None}, "
+                f"ei={self.ei is not None}, chi_background={self.chi_background is not None}, "
+                f"bloch_x={self.bloch_x}, bloch_y={self.bloch_y})")
+
+    def set_objective(self, A0=None, s0=None, c0=0.0):
+        """
+        set the QCQP objective function
+        """
+        if A0 is not None:
+            self.A0 = A0
+        if s0 is not None:
+            self.s0 = s0
+        if c0 is not None:
+            self.c0 = c0
+
+            
     def setup_FDFD(self, omega=None, Nx=None, Ny=None, Npmlx=None, Npmly=None, dl=None, bloch_x=None, bloch_y=None):
         """
         setup the FDFD solver. non-None arguments will define / modify corresponding attributes
@@ -143,6 +167,20 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         else:
             raise ValueError("dense QCQP not implemented yet")
     
+    def get_ei(self, ji = None, update=False):
+        """
+        get the incident field
+        """
+        if self.ei is None:
+            ei = self.FDFD.get_TM_field(ji, self.chi_background) if self.ji is None else self.FDFD.get_TM_field(self.ji, self.chi_background)
+        else:
+            ei = self.ei        
+        if update: self.ei = ei
+        return ei
+    
+    def set_ei(self, ei):
+        self.ei = ei 
+        
     def setup_QCQP(self, Pdiags="global", verbose: float = 0):
         """
         
@@ -156,8 +194,8 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             raise AttributeError("an initial current ji or field ei must be specified.")
         if not (self.ji is None) and not (self.ei is None):
             warnings.warn("If both ji and ei are specified then ji is ignored.")
-        if self.ei is None:
-            self.ei = self.FDFD.get_TM_field(self.ji, self.chi_background)
+        
+        self.get_ei(self.ji, update=True)
 
         if Pdiags=="global":
             self.Pdiags = np.ones((self.Ndes,2), dtype=complex)
@@ -169,15 +207,24 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             if (self.Ginv is None) or (self.M is None):
                 self.setup_EM_operators()
             
-            A1 = np.conj(1.0/self.chi) * self.Ginv.conj().T - sp.eye(self.Ndes)
-            A2 = self.Ginv
-            self.QCQP = SparseSharedProjQCQP(self.A0, self.s0, self.c0, 
-                                            A1, A2, self.ei[self.des_mask]/2, 
+            A0_sparse = self.Ginv.T.conj() @ sp.csc_array(self.A0) @ self.Ginv
+            A1_sparse = sp.csc_array(np.conj(1.0/self.chi) * self.Ginv.conj().T - sp.eye(self.Ndes))
+            A2_sparse = sp.csc_array(self.Ginv)
+            s0_sparse = self.Ginv.T.conj() @ self.s0
+
+            self.QCQP = SparseSharedProjQCQP(A0_sparse, s0_sparse, self.c0, 
+                                            A1_sparse, A2_sparse, self.ei[self.des_mask]/2, 
                                             self.Pdiags, verbose
                                             )
         else:
             raise ValueError("dense QCQP formulation not fully implemented yet")
 
+    def bound_QCQP(self, method : str = 'bfgs', init_lags : np.ndarray = None, opt_params : dict = None):
+        """
+        Calculate a limit on the QCQP
+        """
+        return self.QCQP.solve_current_dual_problem(method = method, init_lags = init_lags, opt_params = opt_params)
+        
 
 
 class Photonics_TE_Yee_FDFD(Photonics_FDFD):

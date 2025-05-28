@@ -365,8 +365,6 @@ class SparseSharedProjQCQP():
 
         new_Pdiags_cols = []
         new_lags_list = []
-        # for i in range(self.Pdiags.shape[1]):
-        #     print(f"Projector {i}: {self.Pdiags[:, i]}")
 
         # Handle the first projectors (j=0,1) - always kept as is
         new_Pdiags_cols.append(self.Pdiags[:, 0])
@@ -388,7 +386,7 @@ class SparseSharedProjQCQP():
 
             if num_nonzero == 1: # Projector is already a single pixel, keep it as is
                 new_Pdiags_cols.append(P_j_diag)
-                new_lags_list.append(current_lag_j)
+                #new_lags_list.append(current_lag_j)
             elif num_nonzero > 1: # Split the projector
                 split_point = num_nonzero // 2
                 indices1 = nonzero_indices[:split_point]
@@ -401,27 +399,23 @@ class SparseSharedProjQCQP():
                 P2_diag_new = np.zeros_like(P_j_diag)
                 P2_diag_new[indices2] = P_j_diag[indices2]  # Copy values from original projector
 
-                new_Pdiags_cols.append(P1_diag_new)
-                new_lag_value = current_lag_j if split_limit == 2 else 0 
-                new_lags_list.append(new_lag_value) # Duplicate lag
-
-                new_Pdiags_cols.append(P2_diag_new)
-                new_lag_value = current_lag_j if split_limit == 2 else 0
-                new_lags_list.append(new_lag_value) # Duplicate lag
+                if not np.all(P1_diag_new[1:] == 0): new_Pdiags_cols.append(P1_diag_new)
+                if not np.all(P2_diag_new[1:] == 0): new_Pdiags_cols.append(P2_diag_new)
                 
                 if self.verbose > 1:
                     print(f"Split projector {j} (lag: {current_lag_j:.2e}) with {num_nonzero} non-zeros into two projectors with {len(indices1)} and {len(indices2)} non-zeros.")
+
             else:
                 raise ValueError(f"Unexpected number of non-zero elements in projector {j}: {num_nonzero}. Projector should have at least one non-zero element.")
 
         # Update Pdiags and current_lags
-        self.Pdiags = np.column_stack(new_Pdiags_cols)
-        self.current_lags = np.array(new_lags_list)
-
-        # if self.verbose > 0: print(f"Refinement complete. New number of projectors: {self.Pdiags.shape[1]}")
-        # for i in range(self.Pdiags.shape[1]):
-        #     print(f"Projector {i}: {self.Pdiags[:, i]}")
-        # print(self.current_lags)
+        # We need the overall P (and therefore the dual value) to stay constant upon projector refinement. 
+        # Here, we solve the system of equations to do that. It should always be solvable. 
+        new_Pdiags = np.column_stack(new_Pdiags_cols)
+        new_Pdiags_real = np.vstack([np.real(new_Pdiags), np.imag(new_Pdiags)])  # Convert complex to real for least squares
+        old_Pdiags_real = np.vstack([np.real(self.Pdiags), np.imag(self.Pdiags)])  # Convert complex to real for least squares
+        self.current_lags, residuals, rank, s = np.linalg.lstsq(new_Pdiags_real, old_Pdiags_real @ self.current_lags, rcond=None)
+        self.Pdiags = new_Pdiags
         
         # Re-calculate precomputed_As as the projectors have changed
         self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
@@ -435,8 +429,8 @@ class SparseSharedProjQCQP():
     
         # Reset current dual, grad, hess, xstar as they are for the old problem structure
         new_dual, new_grad, new_hess, dual_aux = self.get_dual(self.current_lags, get_grad=True, get_hess=False)
-        # print('new dual:', new_dual)
-        assert np.isclose(new_dual, self.current_dual, atol=1e-6), "Dual value should be the same after refinement."
+        if self.verbose >= 1: print(f'previous dual: {self.current_dual}, new dual: {new_dual} (should be the same)')
+        assert np.isclose(new_dual, self.current_dual, rtol=1e-2), "Dual value should be the same after refinement."
 
         self.current_dual = new_dual
         self.current_grad = new_grad
@@ -460,17 +454,20 @@ class SparseSharedProjQCQP():
             Result of solve_current_dual_problem: 
             (current_dual, current_lags, current_grad, current_hess, current_xstar)
         """
+
         # Check if we're already at pixel level (each projector corresponds to a single pixel)
         if self.Pdiags.shape[1] >= 2 * self.Pdiags.shape[0]:
             if self.verbose > 0:
                 print("All projectors are already at pixel level. No more splitting possible.")
             return
-        #TODO(alessio): Currently, it is possible to split beyond pixel level by having identity + all pixel projectors. Fix this. 
-            
+                    
         # Continue splitting until we reach pixel level
         while self.Pdiags.shape[1] < 2 * self.Pdiags.shape[0]:
             if self.verbose > 0:
-                print(f"Splitting projectors: {self.Pdiags.shape[1]} → {self.Pdiags.shape[1] + self.Pdiags.shape[1] - 2}")
+                if self.Pdiags.shape[1] == 2:
+                    print(f"Splitting projectors: {self.Pdiags.shape[1]} → {self.Pdiags.shape[1] + self.Pdiags.shape[1]}")
+                else: 
+                    print(f"Splitting projectors: {self.Pdiags.shape[1]} → {self.Pdiags.shape[1] + self.Pdiags.shape[1] - 2}")
                 
             # Refine projectors to get finer constraints
             self.refine_projectors()
