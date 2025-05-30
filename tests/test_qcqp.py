@@ -113,16 +113,3 @@ def test_sparse_qcqp(sparse_qcqp_data):
         if sparse_ldos_qcqp.Pdiags.shape[1] > 200:
             break
     print(results)
-
-
-# def test_qcqp_initial_feasibility(sparse_qcqp_data):
-#     """
-#     Test the initial feasibility of the QCQP problem using the fixture.
-#     """
-#     sparse_ldos_qcqp = sparse_qcqp_data["qcqp"]
-#     data = sparse_qcqp_data["data_path"] # For context, if needed for loading other files
-
-#     lags_optimal = sparse_qcqp_data["lags_optimal"]
-#     optimal_feasible = sparse_ldos_qcqp.is_dual_feasible(lags_optimal)
-#     assert optimal_feasible, "Optimal lags should also be dual feasible."
-
