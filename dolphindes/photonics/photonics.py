@@ -143,9 +143,9 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             self.c0 = c0
 
             
-    def setup_FDFD(self, omega=None, Nx=None, Ny=None, Npmlx=None, Npmly=None, dl=None, bloch_x=None, bloch_y=None):
+    def setup_EM_solver(self, omega=None, Nx=None, Ny=None, Npmlx=None, Npmly=None, dl=None, bloch_x=None, bloch_y=None):
         """
-        setup the FDFD solver. non-None arguments will define / modify corresponding attributes
+        setup the solver. non-None arguments will define / modify corresponding attributes
         """
         params = locals()
         params.pop('self')
@@ -154,7 +154,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
                 setattr(self, param_name, param_value)
 
         check_attributes(self, 'Nx', 'Ny', 'Npmlx', 'Npmly', 'dl', 'bloch_x', 'bloch_y')
-        self.FDFD = TM_FDFD(self.omega, self.Nx, self.Ny, self.Npmlx, self.Npmly, self.dl, self.bloch_x, self.bloch_y)
+        self.EM_solver = TM_FDFD(self.omega, self.Nx, self.Ny, self.Npmlx, self.Npmly, self.dl, self.bloch_x, self.bloch_y)
     
     
     def setup_EM_operators(self):
@@ -163,7 +163,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         """
         check_attributes(self, 'des_mask')
         if self.sparseQCQP:
-            self.Ginv, self.M = self.FDFD.get_GaaInv(self.des_mask, self.chi_background)
+            self.Ginv, self.M = self.EM_solver.get_GaaInv(self.des_mask, self.chi_background)
         else:
             raise ValueError("dense QCQP not implemented yet")
     
@@ -172,7 +172,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         get the incident field
         """
         if self.ei is None:
-            ei = self.FDFD.get_TM_field(ji, self.chi_background) if self.ji is None else self.FDFD.get_TM_field(self.ji, self.chi_background)
+            ei = self.EM_solver.get_TM_field(ji, self.chi_background) if self.ji is None else self.EM_solver.get_TM_field(self.ji, self.chi_background)
         else:
             ei = self.ei        
         if update: self.ei = ei
