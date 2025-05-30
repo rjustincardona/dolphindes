@@ -118,7 +118,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         
         try:
             check_attributes(self, 'omega', 'chi', 'Nx', 'Ny', 'Npmlx', 'Npmly', 'des_mask', 'chi_background', 'bloch_x', 'bloch_y')
-            self.setup_FDFD()
+            self.setup_EM_solver()
             self.setup_EM_operators()
             
         except AttributeError as e:
