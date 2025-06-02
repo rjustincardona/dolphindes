@@ -126,7 +126,7 @@ class SparseSharedProjQCQP():
         self.Achofac = sksparse.cholmod.analyze(A)
         return self.Achofac
 
-    def _get_xstar(self, lags: np.ndarray, get_xgrad: bool = False) -> tuple[sksparse.cholmod.Factor, np.ndarray, float, np.ndarray]:
+    def _get_xstar(self, lags: np.ndarray) -> tuple[sksparse.cholmod.Factor, np.ndarray, float]:
         """For a total A and S, solve for xstar using the cholesky factorization of A
         
         For a given set of Lagrange multipliers, which define A and S, the x_star that maximizes the Lagrangian 
@@ -140,9 +140,8 @@ class SparseSharedProjQCQP():
             The cholesky factorization of A.
         x_star : np.ndarray
             The solution x_star to the equation A x_star = S.
-        grad_x : np.ndarray
-            The gradient of the Lagrangian with respect to x_star, if requested (otherwise empty array)
-
+        xAx : float
+            x_star.conj().T @ A @ x_star, the dual function value
         """
 
         P_diag = self._add_projectors(lags)
@@ -154,17 +153,7 @@ class SparseSharedProjQCQP():
         x_star = Acho.solve_A(S)
         xAx = np.real(x_star.conjugate() @ A @ x_star) 
 
-        grad_x = [] #np.zeros(Pdiag_list.shape[0])
-
-        if get_xgrad:
-            # grad_x_mat is a matrix containing the vectors b that require solving Ax=b for each lagrange multiplier
-            # this is useful for the Hessian calculation. 
-            # Warning("get_xgrad (needed for Hessian) is not tested!")
-            # grad_x_mat = -self.A1 @ (x_star[:, None] * Pdiag_list[None, :]) + (self.s1[:, None] * Pdiag_list[None, :])
-            # grad_x = Acho.solve_A(grad_x_mat)
-            raise NotImplementedError("get_xgrad is not implemented yet. Use a first order method.")
-    
-        return Acho, x_star, xAx, grad_x
+        return Acho, x_star, xAx
         
     def get_dual(self, lags: np.ndarray, get_grad: bool = False, get_hess: bool = False, penalty_vectors: list = []) -> tuple[float, np.ndarray, np.ndarray]:
         """Gets the dual value and the derivatives of the dual with respect to Lagrange multipliers.
@@ -189,15 +178,34 @@ class SparseSharedProjQCQP():
         hess : np.ndarray
             The Hessian of the dual function with respect to the lagrange multipliers, if requested.
         """
-        if get_hess: raise NotImplementedError("SparseSharedProjQCQP cannot return the Hessian yet. Use a first order method.")
-        
+
         grad, hess = [], []
         grad_penalty, hess_penalty = [], []
 
-        Acho, xstar, dualval, grad_x = self._get_xstar(lags, get_xgrad = get_hess) # grad_x is needed for calculating the hessian. xstar is sufficient for the gradient. 
+        Acho, xstar, dualval = self._get_xstar(lags)
         dualval += self.c0
-        
-        if get_grad: # This is grad_lambda (not grad_x)
+
+        if get_hess:
+            if not hasattr(self, 'precomputed_As'):
+                raise AttributeError('precomputed_As needed for computing Hessian')
+                # this assumes that in the future we may consider making precomputed_As optional
+                # can also compute the HEssian without precomputed_As, leave for future implementation if useful
+                
+            # useful intermediate computations
+            # (Fx)_k = -Sym(A_1 P_k A2) x
+            Fx = np.zeros((len(xstar),len(self.precomputed_As)), dtype=complex)
+            for k,Ak in enumerate(self.precomputed_As):
+                Fx[:,k] = -Ak @ xstar
+            
+            # (Fs)_k = A_2^dagger P_k^dagger s1
+            Fs = self.A2.conj().T @ (self.Pdiags.conj().T * self.s1).T
+            #print('Fx', Fx, 'Fs', Fs)
+            grad = np.real(xstar.conj() @ (Fx + 2*Fs)) #get_hess implies get_grad also
+            
+            Ftot = Fx + Fs
+            hess = 2*np.real(Ftot.conj().T @ Acho.solve_A(Ftot))
+                
+        elif get_grad: # This is grad_lambda (not grad_x)
             # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))). Second term: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
             # self.Pdiags has shape (N_diag, N_projectors), A2_xstar has shape (N_diag,)
             # We want to multiply each column of Pdiags elementwise with A2_xstar. With broadcasting, we get 
@@ -219,7 +227,19 @@ class SparseSharedProjQCQP():
             A_inv_penalty = Acho.solve_A(penalty_matrix)
             dualval_penalty += np.sum(np.real(A_inv_penalty.conj() * penalty_matrix)) # multiplies columns with columns, sums all at once
 
-            if get_grad: 
+            if get_hess:
+                # get_hess implies get_grad also
+                grad_penalty = np.zeros(len(grad))
+                hess_penalty = np.zeros((len(grad),len(grad)))
+                Fv = np.zeros((penalty_matrix.shape[0],len(grad)), dtype=complex)
+                for j in range(penalty_matrix.shape[1]):
+                    for k,Ak in enumerate(self.precomputed_As):
+                        # yes this is a double for loop, hessian for fake sources is likely a speed bottleneck
+                        Fv[:,k] = Ak @ A_inv_penalty[:,j]
+                    
+                    grad_penalty += np.real(-A_inv_penalty[:,j].conj().T @ Fv)
+                    hess_penalty += 2*np.real(Fv.conj().T @ Acho.solve_A(Fv))
+            elif get_grad: 
                 grad_penalty = np.zeros(len(grad))
                 for j in range(penalty_matrix.shape[1]):
                     # slow: for i in range(len(grad)): grad_penalty[i] += -np.real(A_inv_penalty[:, j].conj().T @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ A_inv_penalty[:, j]))) # for loop method
@@ -234,7 +254,7 @@ class SparseSharedProjQCQP():
         dual_aux = DualAux(dualval_real=dualval, dualgrad_real=grad, dualval_penalty=dualval_penalty, grad_penalty=grad_penalty)
 
         if len(penalty_vectors) > 0:
-            return dualval + dualval_penalty, grad + grad_penalty, hess, dual_aux
+            return dualval + dualval_penalty, grad + grad_penalty, hess + hess_penalty, dual_aux
         else:
             return dualval, grad, hess, dual_aux
 
@@ -335,7 +355,7 @@ class SparseSharedProjQCQP():
             lambda_opt, dualval_opt, grad_opt = optimizer.run(init_lags)
             self.current_dual, self.current_lags, self.current_grad, self.current_hess = dualval_opt, lambda_opt, grad_opt, []  # hess is not computed in BFGS
             
-            Acho, self.current_xstar, xAx, grad_x = self._get_xstar(self.current_lags, False)
+            Acho, self.current_xstar, xAx = self._get_xstar(self.current_lags)
 
             return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
         else: 
@@ -581,7 +601,7 @@ class DenseSharedProjQCQP():
         """Gets the total S vector for the QCQP = s0 + sum_j lag[j] P_j^dagger s1 given P = sum_j lag[j] P_j"""
         return self.s0 + P.T.conj() @ self.s1
 
-    def _get_xstar(self, A: sp.csc_array, S: np.ndarray, get_xgrad: bool = False):
+    def _get_xstar(self, A: sp.csc_array, S: np.ndarray):
         """For a total A and S, solve for xstar using the cholesky factorization of A
         
         For a given set of Lagrange multipliers, which define A and S, the x_star that maximizes the Lagrangian 
@@ -595,9 +615,6 @@ class DenseSharedProjQCQP():
             The cholesky factorization of A.
         x_star : np.ndarray
             The solution x_star to the equation A x_star = S.
-        grad_x : np.ndarray
-            The gradient of the Lagrangian with respect to x_star, if requested (otherwise empty array)
-
         """
         pass 
         
