@@ -58,8 +58,8 @@ class SparseSharedProjQCQP():
         self.s0 = s0
         self.s1 = s1
         self.c0 = c0
-        self.A1 = sp.csr_array(A1)
-        self.A2 = sp.csr_array(A2)
+        self.A1 = sp.csc_array(A1)
+        self.A2 = sp.csc_array(A2)
         self.verbose = verbose
         self.Pdiags = Pdiags
         self.Achofac = None
