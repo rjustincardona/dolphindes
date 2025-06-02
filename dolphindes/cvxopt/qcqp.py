@@ -166,6 +166,7 @@ class SparseSharedProjQCQP():
             Whether to return the gradient of the dual with respect to the lagrange multipliers. Default is False.
         get_hess : bool, optional
             Whether to return the Hessian of the dual with respect to the lagrange multipliers. Default is False.
+            If True, grad is also automatically computed regardless of what get_grad specifies. 
         penalty_vectors : list, optional
             A list of penalty vectors for the PSD boundary. If provided, the dual value and gradients will include a penalty term. Default is None.
         
@@ -205,7 +206,7 @@ class SparseSharedProjQCQP():
             Ftot = Fx + Fs
             hess = 2*np.real(Ftot.conj().T @ Acho.solve_A(Ftot))
                 
-        elif get_grad: # This is grad_lambda (not grad_x)
+        elif get_grad: # This is grad_lambda (not grad_x); elif since get_hess automatically computes grad
             # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))). Second term: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
             # self.Pdiags has shape (N_diag, N_projectors), A2_xstar has shape (N_diag,)
             # We want to multiply each column of Pdiags elementwise with A2_xstar. With broadcasting, we get 
@@ -239,6 +240,7 @@ class SparseSharedProjQCQP():
                     
                     grad_penalty += np.real(-A_inv_penalty[:,j].conj().T @ Fv)
                     hess_penalty += 2*np.real(Fv.conj().T @ Acho.solve_A(Fv))
+                    
             elif get_grad: 
                 grad_penalty = np.zeros(len(grad))
                 for j in range(penalty_matrix.shape[1]):
