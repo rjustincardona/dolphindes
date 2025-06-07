@@ -3,7 +3,7 @@ Optimizers
 
 """
 
-__all__ = ["BFGS", "Newton"]
+__all__ = ["BFGS", "Alt_Newton_GD"]
 
 import numpy as np 
 
@@ -260,11 +260,13 @@ class BFGS(_Optimizer):
         return new_Hinv
     
     def _add_penalty(self, opt_step_size, last_step_size, feas_step_size, x0, dir, opt_fx0):
-        if opt_step_size / last_step_size > (self.opt_params['penalty_reduction'] + 1) / 2:
+        if np.isclose(opt_step_size, last_step_size, atol=0.0):
+            # if no backtracking happened, can start with a more aggressive stepsize
             return opt_step_size * 2, False
         else:
-            if feas_step_size / last_step_size < (self.opt_params['penalty_reduction'] + 1) / 2 and opt_step_size / feas_step_size > (self.opt_params['penalty_reduction'] + 1) / 2:
-                if self.verbose >= 2: print(f"Adding penalty due to feasibility wall.")
+            if feas_step_size < last_step_size and np.isclose(opt_step_size, feas_step_size, atol=0.0):
+                # all the backtracking due to feasibility reasons, add penalty
+                if self.verbose >= 2: print("Adding penalty due to feasibility wall.")
                 penalty_vector, _ = self.penalty_vector_func(x0 + opt_step_size * dir)
                 penalty_value = self.optfunc(x0, get_grad=False, get_hess=False, penalty_vectors=[penalty_vector])[0] 
                 epsS = np.sqrt(self.opt_params['penalty_ratio']*np.abs(opt_fx0 / penalty_value))
@@ -332,11 +334,53 @@ class BFGS(_Optimizer):
             
         return self.opt_x, self.opt_fx, self.xgrad
 
-class Newton(_Optimizer):
+
+class Alt_Newton_GD(_Optimizer):
+    """
+    Subclass of `Optimizer`, inherits its behavior.
+
+    Additional Features:
+    ---------------------
+        - run() is implemented via alternating Newton and gradient descent steps; alternating improves stability
+        - _break_condition() is implemented to check for convergence
+    """
+    
     def __init__(self, *params):
         super().__init__(*params)
-        self.hess = np.zeros((self.ndof, self.ndof))
-        raise NotImplementedError("Newton not implemented yet")
+    
+    def _break_condition(self, iter_num, iter_type):
+        if iter_type == 'inner':
+            # Directional stationarity residual convergence
+            if iter_num > self.opt_params['min_inner_iter']:
+                function_value = self.opt_fx 
+                opttol = self.opt_params['opttol']
+                fminus_xxgrad = function_value - np.dot(self.opt_x, self.xgrad)
+                remaining_descent = np.abs(self.opt_x) @ np.abs(self.xgrad)
+                gradConverge = self.opt_params['gradConverge']
+                
+                if gradConverge  and np.abs(function_value - fminus_xxgrad)< opttol * np.abs(fminus_xxgrad) and np.abs(remaining_descent)< opttol * np.abs(fminus_xxgrad) and np.linalg.norm(self.xgrad) < opttol * np.abs(function_value): 
+                    return True 
 
+                elif (not gradConverge) and np.abs(function_value-fminus_xxgrad) < opttol*np.abs(fminus_xxgrad) and np.abs(remaining_descent)<opttol*np.abs(fminus_xxgrad):
+                    return True 
+            
+            # Simple objective value convergence 
+            if iter_num % self.opt_params['break_iter_period'] == 0:
+                if self.verbose > 0 :print(f"iter_num: {iter_num}, prev_fx: {self.prev_fx}, opt_fx: {self.opt_fx}, opttol: {self.opt_params['opttol']}")
+                if np.abs(self.prev_fx - self.opt_fx) < np.abs(self.opt_fx)*self.opt_params['opttol'] or np.isclose(self.opt_fx, 0, atol=1e-14):
+                    return True
+                self.prev_fx = self.opt_fx
 
+        elif iter_type == 'outer':
+            # Outer objective value convergence
+            if np.abs(self.prev_fx_outer - self.opt_fx) < np.abs(self.opt_fx)*self.opt_params['opttol'] or np.isclose(self.opt_fx, 0, atol=1e-14):
+                return True
+            
+            # If a max number of outer iterations was specified, check for that 
+            if iter_num > self.opt_params['max_restart']:
+                if self.verbose >= 2: print(f"Maximum number of outer iterations reached: {self.opt_params['max_restart']}")
+                return True
+        
+        return False
+    
 
