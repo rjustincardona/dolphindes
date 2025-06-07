@@ -9,7 +9,7 @@ import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import sksparse.cholmod 
-from .optimization import BFGS
+from .optimization import BFGS, Alt_Newton_GD
 from collections import namedtuple
 from typing import Optional, Dict, Any, Tuple # For type hinting the new method
 from numba import jit 
@@ -351,17 +351,17 @@ class SparseSharedProjQCQP():
             init_lags = self.find_feasible_lags()
 
         if method == 'newton':
-            raise NotImplementedError("SparseSharedProjQCQP cannot use Newton's method yet.")
+            optimizer = Alt_Newton_GD(optfunc, feasibility_func, penalty_vector_func, is_convex, opt_params)
         elif method == 'bfgs':
             optimizer = BFGS(optfunc, feasibility_func, penalty_vector_func, is_convex, opt_params)
-            lambda_opt, dualval_opt, grad_opt = optimizer.run(init_lags)
-            self.current_dual, self.current_lags, self.current_grad, self.current_hess = dualval_opt, lambda_opt, grad_opt, []  # hess is not computed in BFGS
-            
-            Acho, self.current_xstar, xAx = self._get_xstar(self.current_lags)
-
-            return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
         else: 
             raise ValueError(f"Unknown method '{method}' for solving the dual problem. Use newton or bfgs.")
+        
+        self.current_lags, self.current_dual, self.current_grad = optimizer.run(init_lags)
+        _, self.current_xstar, _ = self._get_xstar(self.current_lags)
+
+        return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
+        
     
     def refine_projectors(self):
         """
