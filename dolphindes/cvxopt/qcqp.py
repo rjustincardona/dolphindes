@@ -363,7 +363,7 @@ class SparseSharedProjQCQP():
         return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
         
     
-    def refine_projectors(self):
+    def refine_projectors(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         Doubles the number of projectors, refining the number of constraints to smaller regions. Multipliers will be selected so that dual value remains constant and can be further optimized from existing point. 
 
@@ -461,7 +461,7 @@ class SparseSharedProjQCQP():
         
         return self.Pdiags, self.current_lags
 
-    def iterative_splitting_step(self):
+    def iterative_splitting_step(self, method : str = 'bfgs'):
         """
         Iterative splitting step generator function that continues until pixel-level constraints are reached.
 
@@ -495,7 +495,7 @@ class SparseSharedProjQCQP():
             self.refine_projectors()
             
             # Solve the dual problem with the new projectors
-            result = self.solve_current_dual_problem('bfgs', init_lags=self.current_lags)
+            result = self.solve_current_dual_problem(method, init_lags=self.current_lags)
             
             # Yield the result to the caller
             yield result
