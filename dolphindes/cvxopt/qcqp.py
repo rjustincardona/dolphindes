@@ -83,7 +83,7 @@ class SparseSharedProjQCQP():
         
         # Stack all precomputed_As horizontally for vectorized operations
         # This creates a matrix where each column k corresponds to A_k @ x
-        self.stacked_As = sp.hstack(self.precomputed_As, format='csc')
+        # self.stacked_As = sp.hstack(self.precomputed_As, format='csc')
         
         print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
 
