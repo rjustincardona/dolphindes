@@ -1,5 +1,5 @@
 import pytest
-from dolphindes.cvxopt import Newton, BFGS
+from dolphindes.cvxopt import Alt_Newton_GD, BFGS
 import numpy as np 
 import scipy.sparse as sp 
 
@@ -11,10 +11,12 @@ def generate_spd_matrix(n, cond_number=1e3):
     A = Q @ np.diag(eigenvalues) @ Q.T  # Construct A with desired conditioning
     return A
 
-def test_bfgs_optimum():
+@pytest.fixture
+def optimization_setup():
     num_dof = 20
     A = generate_spd_matrix(num_dof)
     b = np.random.rand(num_dof)
+    opttol = 1e-4
     
     def optfunc(x, get_grad=False, get_hess=False, penalty_vectors=[]):
         objval = x.conj() @ A @ x - b.conj() @ x 
@@ -22,23 +24,41 @@ def test_bfgs_optimum():
         hess = 2*A if get_hess else []
         return objval, grad, hess, 0
     
-    opttol = 1e-4
-    
     def feasible_func(x):
-        return True 
+        return True
     
     def penalty_func(x):
-        pass 
+        pass
     
-    opt = BFGS(optfunc, feasible_func, penalty_func, True, {'opttol': opttol, 'verbose': 4, 'break_iter_period': 10, 'gradConverge': True})
-    opt.run(10*np.array(np.random.random(num_dof)))
-    x, fx = opt.get_last_opt()
-    # print(x, fx)
+    opt_config = {'opttol': opttol, 'verbose': 4, 'break_iter_period': 10, 'gradConverge': True}
+    
     Ainv = np.linalg.inv(A)
-    xstar = 1/2 * Ainv @ b
+    analytical_solution = 1/2 * Ainv @ b
+    
+    return {
+        'num_dof': num_dof,
+        'optfunc': optfunc,
+        'feasible_func': feasible_func,
+        'penalty_func': penalty_func,
+        'opt_config': opt_config,
+        'opttol': opttol,
+        'analytical_solution': analytical_solution
+    }
 
-    assert np.allclose(x, xstar, atol=opttol)
-    assert np.allclose(fx, optfunc(xstar)[0], atol=opttol)
+def test_bfgs_optimum(optimization_setup):
+    setup = optimization_setup
+    opt = BFGS(setup['optfunc'], setup['feasible_func'], setup['penalty_func'], True, setup['opt_config'])
+    opt.run(10*np.array(np.random.random(setup['num_dof'])))
+    x, fx = opt.get_last_opt()
+    
+    assert np.allclose(x, setup['analytical_solution'], atol=setup['opttol'])
+    assert np.allclose(fx, setup['optfunc'](setup['analytical_solution'])[0], atol=setup['opttol'])
 
-def test_newton_optimum():
-    pass 
+def test_newton_optimum(optimization_setup):
+    setup = optimization_setup
+    opt = Alt_Newton_GD(setup['optfunc'], setup['feasible_func'], setup['penalty_func'], True, setup['opt_config'])
+    opt.run(10*np.array(np.random.random(setup['num_dof'])))
+    x, fx = opt.get_last_opt()
+    
+    assert np.allclose(x, setup['analytical_solution'], atol=setup['opttol'])
+    assert np.allclose(fx, setup['optfunc'](setup['analytical_solution'])[0], atol=setup['opttol'])
