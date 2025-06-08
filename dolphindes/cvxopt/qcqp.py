@@ -83,7 +83,7 @@ class SparseSharedProjQCQP():
         
         # Stack all precomputed_As horizontally for vectorized operations
         # This creates a matrix where each column k corresponds to A_k @ x
-        # self.stacked_As = sp.hstack(self.precomputed_As, format='csc')
+        self.stacked_As = sp.hstack(self.precomputed_As, format='csc')
         
         print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
 
@@ -207,36 +207,10 @@ class SparseSharedProjQCQP():
             # useful intermediate computations
             # (Fx)_k = -Sym(A_1 P_k A2) x_star = -A_k @ x_star
             
-            # Original loop:
             Fx = np.zeros((len(xstar),len(self.precomputed_As)), dtype=complex)
             for k,Ak in enumerate(self.precomputed_As):
                 Fx[:,k] = -Ak @ xstar
-
-            # # New code to replace loop, vectorized approach using self.stacked_As
-            # It is not clear if this is faster. TODO(alessio): profile this. 
-
-            # num_projectors = self.get_number_constraints() 
-
-            # # Reshape xstar to be a column vector and make it a sparse matrix
-            # xstar_col_sparse = sp.csc_matrix(xstar.reshape(xstar.shape[0], 1))
-
-            # # Create a sparse identity matrix
-            # eye_M_sparse = sp.eye(num_projectors, format='csc')
-
-            # # Construct the Kronecker product: kron(I_M, xstar_col)
-            # # This results in a sparse matrix of shape (x_star_len * num_projectors, num_projectors)
-            # # where each column j is [0, ..., 0, xstar_col^T, 0, ..., 0]^T (xstar_col in j-th block)
-            # kron_prod = sp.kron(eye_M_sparse, xstar_col_sparse, format='csc')
-
-            # # self.stacked_As has shape (x_star_len, x_star_len * num_projectors)
-            # # self.stacked_As @ kron_prod results in a matrix where column j is A_j @ xstar
-            # # The result is a sparse matrix, convert to dense array for Fx
             
-            # Fx = -(self.stacked_As @ kron_prod).toarray()
-
-            # print('density of Fx: ', Fx.nnz / Fx.size)
-            
-            # The part below works with the original loop 
             grad = np.real(xstar.conj() @ (Fx + 2*self.Fs)) #get_hess implies get_grad also
             
             Ftot = Fx + self.Fs
@@ -476,7 +450,7 @@ class SparseSharedProjQCQP():
         self.Pdiags = new_Pdiags
         
         # Re-calculate precomputed_As as the projectors have changed
-        self.compute_precomputed_values(self)
+        self.compute_precomputed_values()
     
         # Reset current dual, grad, hess, xstar as they are for the old problem structure
         new_dual, new_grad, new_hess, dual_aux = self.get_dual(self.current_lags, get_grad=True, get_hess=False)
