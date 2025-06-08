@@ -69,16 +69,28 @@ class SparseSharedProjQCQP():
         self.current_lags = None 
         self.current_xstar = None 
 
-        # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
-        self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
-        for i in range(self.Pdiags.shape[1]):
-            self.precomputed_As[i] = self._Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
-        
-        print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
-        self._update_chofac()
+        self.compute_precomputed_values()  # Precompute values for efficiency
         
     def __repr__(self):
         return f"SparseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
+
+    def compute_precomputed_values(self):
+        # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
+        self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
+        for i in range(self.Pdiags.shape[1]):
+            Ak = self._Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
+            self.precomputed_As[i] = Ak
+        
+        # Stack all precomputed_As horizontally for vectorized operations
+        # This creates a matrix where each column k corresponds to A_k @ x
+        # self.stacked_As = sp.hstack(self.precomputed_As, format='csc')
+        
+        print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
+
+        # (Fs)_k = A_2^dagger P_k^dagger s1
+        self.Fs = self.A2.conj().T @ (self.Pdiags.conj().T * self.s1).T
+
+        self._update_chofac()
 
     def get_number_constraints(self) -> int:
         """Returns the number of constraints in the QCQP"""
@@ -190,26 +202,50 @@ class SparseSharedProjQCQP():
             if not hasattr(self, 'precomputed_As'):
                 raise AttributeError('precomputed_As needed for computing Hessian')
                 # this assumes that in the future we may consider making precomputed_As optional
-                # can also compute the HEssian without precomputed_As, leave for future implementation if useful
+                # can also compute the Hessian without precomputed_As, leave for future implementation if useful
                 
             # useful intermediate computations
-            # (Fx)_k = -Sym(A_1 P_k A2) x
+            # (Fx)_k = -Sym(A_1 P_k A2) x_star = -A_k @ x_star
+            
+            # Original loop:
             Fx = np.zeros((len(xstar),len(self.precomputed_As)), dtype=complex)
             for k,Ak in enumerate(self.precomputed_As):
                 Fx[:,k] = -Ak @ xstar
+
+            # # New code to replace loop, vectorized approach using self.stacked_As
+            # It is not clear if this is faster. TODO(alessio): profile this. 
+
+            # num_projectors = self.get_number_constraints() 
+
+            # # Reshape xstar to be a column vector and make it a sparse matrix
+            # xstar_col_sparse = sp.csc_matrix(xstar.reshape(xstar.shape[0], 1))
+
+            # # Create a sparse identity matrix
+            # eye_M_sparse = sp.eye(num_projectors, format='csc')
+
+            # # Construct the Kronecker product: kron(I_M, xstar_col)
+            # # This results in a sparse matrix of shape (x_star_len * num_projectors, num_projectors)
+            # # where each column j is [0, ..., 0, xstar_col^T, 0, ..., 0]^T (xstar_col in j-th block)
+            # kron_prod = sp.kron(eye_M_sparse, xstar_col_sparse, format='csc')
+
+            # # self.stacked_As has shape (x_star_len, x_star_len * num_projectors)
+            # # self.stacked_As @ kron_prod results in a matrix where column j is A_j @ xstar
+            # # The result is a sparse matrix, convert to dense array for Fx
             
-            # (Fs)_k = A_2^dagger P_k^dagger s1
-            Fs = self.A2.conj().T @ (self.Pdiags.conj().T * self.s1).T
-            #print('Fx', Fx, 'Fs', Fs)
-            grad = np.real(xstar.conj() @ (Fx + 2*Fs)) #get_hess implies get_grad also
+            # Fx = -(self.stacked_As @ kron_prod).toarray()
+
+            # print('density of Fx: ', Fx.nnz / Fx.size)
             
-            Ftot = Fx + Fs
+            # The part below works with the original loop 
+            grad = np.real(xstar.conj() @ (Fx + 2*self.Fs)) #get_hess implies get_grad also
+            
+            Ftot = Fx + self.Fs
             hess = 2*np.real(Ftot.conj().T @ Acho.solve_A(Ftot))
                 
         elif get_grad: # This is grad_lambda (not grad_x); elif since get_hess automatically computes grad
             # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))). Second term: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
             # self.Pdiags has shape (N_diag, N_projectors), A2_xstar has shape (N_diag,)
-            # We want to multiply each column of Pdiags elementwise with A2_xstar. With broadcasting, we get 
+            # We want to multiply each column of Pdiags elementwise with A2_xstar. 
             # However, we know that sum_i w_i A_ij v_i = sum_i (w_i * v_i) A_ij. LHS is expression right below, RHS is below so we avoid dense intermediate matrices. 
             A2_xstar = self.A2 @ xstar      # Shape: (N_p,)
             x_conj_A1 = xstar.conj() @ self.A1  # Shape: (N_p,) where N_p = self.A1.shape[1]
@@ -440,14 +476,7 @@ class SparseSharedProjQCQP():
         self.Pdiags = new_Pdiags
         
         # Re-calculate precomputed_As as the projectors have changed
-        self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
-        for i in range(self.Pdiags.shape[1]):
-            # Ensure Pdiags[:, i] is 1D for diags_array
-            diag_values = self.Pdiags[:, i].flatten()
-            self.precomputed_As[i] = self._Sym(self.A1 @ sp.diags_array(diag_values, format='csr') @ self.A2)
-        
-        # Update the Cholesky factorization analysis
-        self._update_chofac()
+        self.compute_precomputed_values(self)
     
         # Reset current dual, grad, hess, xstar as they are for the old problem structure
         new_dual, new_grad, new_hess, dual_aux = self.get_dual(self.current_lags, get_grad=True, get_hess=False)
