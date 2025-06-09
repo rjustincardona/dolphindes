@@ -9,7 +9,7 @@ import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import sksparse.cholmod 
-from .optimization import BFGS
+from .optimization import BFGS, Alt_Newton_GD
 from collections import namedtuple
 from typing import Optional, Dict, Any, Tuple # For type hinting the new method
 from numba import jit 
@@ -58,8 +58,8 @@ class SparseSharedProjQCQP():
         self.s0 = s0
         self.s1 = s1
         self.c0 = c0
-        self.A1 = sp.csr_array(A1)
-        self.A2 = sp.csr_array(A2)
+        self.A1 = sp.csc_array(A1)
+        self.A2 = sp.csc_array(A2)
         self.verbose = verbose
         self.Pdiags = Pdiags
         self.Achofac = None
@@ -69,16 +69,28 @@ class SparseSharedProjQCQP():
         self.current_lags = None 
         self.current_xstar = None 
 
-        # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
-        self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
-        for i in range(self.Pdiags.shape[1]):
-            self.precomputed_As[i] = self._Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
-        
-        print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
-        self._update_chofac()
+        self.compute_precomputed_values()  # Precompute values for efficiency
         
     def __repr__(self):
         return f"SparseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
+
+    def compute_precomputed_values(self):
+        # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
+        self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
+        for i in range(self.Pdiags.shape[1]):
+            Ak = self._Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
+            self.precomputed_As[i] = Ak
+        
+        # Stack all precomputed_As horizontally for vectorized operations
+        # This creates a matrix where each column k corresponds to A_k @ x
+        # self.stacked_As = sp.hstack(self.precomputed_As, format='csc')
+        
+        print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
+
+        # (Fs)_k = A_2^dagger P_k^dagger s1
+        self.Fs = self.A2.conj().T @ (self.Pdiags.conj().T * self.s1).T
+
+        self._update_chofac()
 
     def get_number_constraints(self) -> int:
         """Returns the number of constraints in the QCQP"""
@@ -126,7 +138,7 @@ class SparseSharedProjQCQP():
         self.Achofac = sksparse.cholmod.analyze(A)
         return self.Achofac
 
-    def _get_xstar(self, lags: np.ndarray, get_xgrad: bool = False) -> tuple[sksparse.cholmod.Factor, np.ndarray, float, np.ndarray]:
+    def _get_xstar(self, lags: np.ndarray) -> tuple[sksparse.cholmod.Factor, np.ndarray, float]:
         """For a total A and S, solve for xstar using the cholesky factorization of A
         
         For a given set of Lagrange multipliers, which define A and S, the x_star that maximizes the Lagrangian 
@@ -140,9 +152,8 @@ class SparseSharedProjQCQP():
             The cholesky factorization of A.
         x_star : np.ndarray
             The solution x_star to the equation A x_star = S.
-        grad_x : np.ndarray
-            The gradient of the Lagrangian with respect to x_star, if requested (otherwise empty array)
-
+        xAx : float
+            x_star.conj().T @ A @ x_star, the dual function value
         """
 
         P_diag = self._add_projectors(lags)
@@ -154,17 +165,7 @@ class SparseSharedProjQCQP():
         x_star = Acho.solve_A(S)
         xAx = np.real(x_star.conjugate() @ A @ x_star) 
 
-        grad_x = [] #np.zeros(Pdiag_list.shape[0])
-
-        if get_xgrad:
-            # grad_x_mat is a matrix containing the vectors b that require solving Ax=b for each lagrange multiplier
-            # this is useful for the Hessian calculation. 
-            # Warning("get_xgrad (needed for Hessian) is not tested!")
-            # grad_x_mat = -self.A1 @ (x_star[:, None] * Pdiag_list[None, :]) + (self.s1[:, None] * Pdiag_list[None, :])
-            # grad_x = Acho.solve_A(grad_x_mat)
-            raise NotImplementedError("get_xgrad is not implemented yet. Use a first order method.")
-    
-        return Acho, x_star, xAx, grad_x
+        return Acho, x_star, xAx
         
     def get_dual(self, lags: np.ndarray, get_grad: bool = False, get_hess: bool = False, penalty_vectors: list = []) -> tuple[float, np.ndarray, np.ndarray]:
         """Gets the dual value and the derivatives of the dual with respect to Lagrange multipliers.
@@ -177,6 +178,7 @@ class SparseSharedProjQCQP():
             Whether to return the gradient of the dual with respect to the lagrange multipliers. Default is False.
         get_hess : bool, optional
             Whether to return the Hessian of the dual with respect to the lagrange multipliers. Default is False.
+            If True, grad is also automatically computed regardless of what get_grad specifies. 
         penalty_vectors : list, optional
             A list of penalty vectors for the PSD boundary. If provided, the dual value and gradients will include a penalty term. Default is None.
         
@@ -189,18 +191,35 @@ class SparseSharedProjQCQP():
         hess : np.ndarray
             The Hessian of the dual function with respect to the lagrange multipliers, if requested.
         """
-        if get_hess: raise NotImplementedError("SparseSharedProjQCQP cannot return the Hessian yet. Use a first order method.")
-        
+
         grad, hess = [], []
         grad_penalty, hess_penalty = [], []
 
-        Acho, xstar, dualval, grad_x = self._get_xstar(lags, get_xgrad = get_hess) # grad_x is needed for calculating the hessian. xstar is sufficient for the gradient. 
+        Acho, xstar, dualval = self._get_xstar(lags)
         dualval += self.c0
-        
-        if get_grad: # This is grad_lambda (not grad_x)
+
+        if get_hess:
+            if not hasattr(self, 'precomputed_As'):
+                raise AttributeError('precomputed_As needed for computing Hessian')
+                # this assumes that in the future we may consider making precomputed_As optional
+                # can also compute the Hessian without precomputed_As, leave for future implementation if useful
+                
+            # useful intermediate computations
+            # (Fx)_k = -Sym(A_1 P_k A2) x_star = -A_k @ x_star
+            
+            Fx = np.zeros((len(xstar),len(self.precomputed_As)), dtype=complex)
+            for k,Ak in enumerate(self.precomputed_As):
+                Fx[:,k] = -Ak @ xstar
+            
+            grad = np.real(xstar.conj() @ (Fx + 2*self.Fs)) #get_hess implies get_grad also
+            
+            Ftot = Fx + self.Fs
+            hess = 2*np.real(Ftot.conj().T @ Acho.solve_A(Ftot))
+                
+        elif get_grad: # This is grad_lambda (not grad_x); elif since get_hess automatically computes grad
             # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))). Second term: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
             # self.Pdiags has shape (N_diag, N_projectors), A2_xstar has shape (N_diag,)
-            # We want to multiply each column of Pdiags elementwise with A2_xstar. With broadcasting, we get 
+            # We want to multiply each column of Pdiags elementwise with A2_xstar. 
             # However, we know that sum_i w_i A_ij v_i = sum_i (w_i * v_i) A_ij. LHS is expression right below, RHS is below so we avoid dense intermediate matrices. 
             A2_xstar = self.A2 @ xstar      # Shape: (N_p,)
             x_conj_A1 = xstar.conj() @ self.A1  # Shape: (N_p,) where N_p = self.A1.shape[1]
@@ -219,7 +238,20 @@ class SparseSharedProjQCQP():
             A_inv_penalty = Acho.solve_A(penalty_matrix)
             dualval_penalty += np.sum(np.real(A_inv_penalty.conj() * penalty_matrix)) # multiplies columns with columns, sums all at once
 
-            if get_grad: 
+            if get_hess:
+                # get_hess implies get_grad also
+                grad_penalty = np.zeros(len(grad))
+                hess_penalty = np.zeros((len(grad),len(grad)))
+                Fv = np.zeros((penalty_matrix.shape[0],len(grad)), dtype=complex)
+                for j in range(penalty_matrix.shape[1]):
+                    for k,Ak in enumerate(self.precomputed_As):
+                        # yes this is a double for loop, hessian for fake sources is likely a speed bottleneck
+                        Fv[:,k] = Ak @ A_inv_penalty[:,j]
+                    
+                    grad_penalty += np.real(-A_inv_penalty[:,j].conj().T @ Fv)
+                    hess_penalty += 2*np.real(Fv.conj().T @ Acho.solve_A(Fv))
+                    
+            elif get_grad: 
                 grad_penalty = np.zeros(len(grad))
                 for j in range(penalty_matrix.shape[1]):
                     # slow: for i in range(len(grad)): grad_penalty[i] += -np.real(A_inv_penalty[:, j].conj().T @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ A_inv_penalty[:, j]))) # for loop method
@@ -234,7 +266,7 @@ class SparseSharedProjQCQP():
         dual_aux = DualAux(dualval_real=dualval, dualgrad_real=grad, dualval_penalty=dualval_penalty, grad_penalty=grad_penalty)
 
         if len(penalty_vectors) > 0:
-            return dualval + dualval_penalty, grad + grad_penalty, hess, dual_aux
+            return dualval + dualval_penalty, grad + grad_penalty, hess + hess_penalty, dual_aux
         else:
             return dualval, grad, hess, dual_aux
 
@@ -329,19 +361,19 @@ class SparseSharedProjQCQP():
             init_lags = self.find_feasible_lags()
 
         if method == 'newton':
-            raise NotImplementedError("SparseSharedProjQCQP cannot use Newton's method yet.")
+            optimizer = Alt_Newton_GD(optfunc, feasibility_func, penalty_vector_func, is_convex, opt_params)
         elif method == 'bfgs':
             optimizer = BFGS(optfunc, feasibility_func, penalty_vector_func, is_convex, opt_params)
-            lambda_opt, dualval_opt, grad_opt = optimizer.run(init_lags)
-            self.current_dual, self.current_lags, self.current_grad, self.current_hess = dualval_opt, lambda_opt, grad_opt, []  # hess is not computed in BFGS
-            
-            Acho, self.current_xstar, xAx, grad_x = self._get_xstar(self.current_lags, False)
-
-            return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
         else: 
             raise ValueError(f"Unknown method '{method}' for solving the dual problem. Use newton or bfgs.")
+        
+        self.current_lags, self.current_dual, self.current_grad = optimizer.run(init_lags)
+        _, self.current_xstar, _ = self._get_xstar(self.current_lags)
+
+        return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
+        
     
-    def refine_projectors(self):
+    def refine_projectors(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         Doubles the number of projectors, refining the number of constraints to smaller regions. Multipliers will be selected so that dual value remains constant and can be further optimized from existing point. 
 
@@ -418,14 +450,7 @@ class SparseSharedProjQCQP():
         self.Pdiags = new_Pdiags
         
         # Re-calculate precomputed_As as the projectors have changed
-        self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
-        for i in range(self.Pdiags.shape[1]):
-            # Ensure Pdiags[:, i] is 1D for diags_array
-            diag_values = self.Pdiags[:, i].flatten()
-            self.precomputed_As[i] = self._Sym(self.A1 @ sp.diags_array(diag_values, format='csr') @ self.A2)
-        
-        # Update the Cholesky factorization analysis
-        self._update_chofac()
+        self.compute_precomputed_values()
     
         # Reset current dual, grad, hess, xstar as they are for the old problem structure
         new_dual, new_grad, new_hess, dual_aux = self.get_dual(self.current_lags, get_grad=True, get_hess=False)
@@ -439,7 +464,7 @@ class SparseSharedProjQCQP():
         
         return self.Pdiags, self.current_lags
 
-    def iterative_splitting_step(self):
+    def iterative_splitting_step(self, method : str = 'bfgs'):
         """
         Iterative splitting step generator function that continues until pixel-level constraints are reached.
 
@@ -473,7 +498,7 @@ class SparseSharedProjQCQP():
             self.refine_projectors()
             
             # Solve the dual problem with the new projectors
-            result = self.solve_current_dual_problem('bfgs', init_lags=self.current_lags)
+            result = self.solve_current_dual_problem(method, init_lags=self.current_lags)
             
             # Yield the result to the caller
             yield result
@@ -581,7 +606,7 @@ class DenseSharedProjQCQP():
         """Gets the total S vector for the QCQP = s0 + sum_j lag[j] P_j^dagger s1 given P = sum_j lag[j] P_j"""
         return self.s0 + P.T.conj() @ self.s1
 
-    def _get_xstar(self, A: sp.csc_array, S: np.ndarray, get_xgrad: bool = False):
+    def _get_xstar(self, A: sp.csc_array, S: np.ndarray):
         """For a total A and S, solve for xstar using the cholesky factorization of A
         
         For a given set of Lagrange multipliers, which define A and S, the x_star that maximizes the Lagrangian 
@@ -595,9 +620,6 @@ class DenseSharedProjQCQP():
             The cholesky factorization of A.
         x_star : np.ndarray
             The solution x_star to the equation A x_star = S.
-        grad_x : np.ndarray
-            The gradient of the Lagrangian with respect to x_star, if requested (otherwise empty array)
-
         """
         pass 
         

@@ -3,7 +3,7 @@ Optimizers
 
 """
 
-__all__ = ["BFGS", "Newton"]
+__all__ = ["BFGS", "Alt_Newton_GD"]
 
 import numpy as np 
 
@@ -111,7 +111,9 @@ class _Optimizer():
         opt_val = np.inf
         grad_direction = dir @ grad
         while True:
-            tmp_value, _, _, _ = self.optfunc(x0 + alpha*dir, get_grad=False, get_hess=False)
+            tmp_value, _, _, _ = self.optfunc(x0 + alpha*dir, get_grad=False, get_hess=False, penalty_vectors=self.penalty_vector_list)
+            if self.verbose>=3:
+                print('backtracking tmp_value', tmp_value)
             if tmp_value < opt_val: #the dual is still decreasing as we backtrack, continue
                 opt_val = tmp_value; alpha_opt=alpha
             else:
@@ -260,11 +262,13 @@ class BFGS(_Optimizer):
         return new_Hinv
     
     def _add_penalty(self, opt_step_size, last_step_size, feas_step_size, x0, dir, opt_fx0):
-        if opt_step_size / last_step_size > (self.opt_params['penalty_reduction'] + 1) / 2:
+        if np.isclose(opt_step_size, last_step_size, atol=0.0):
+            # if no backtracking happened, can start with a more aggressive stepsize
             return opt_step_size * 2, False
         else:
-            if feas_step_size / last_step_size < (self.opt_params['penalty_reduction'] + 1) / 2 and opt_step_size / feas_step_size > (self.opt_params['penalty_reduction'] + 1) / 2:
-                if self.verbose >= 2: print(f"Adding penalty due to feasibility wall.")
+            if feas_step_size < last_step_size and np.isclose(opt_step_size, feas_step_size, atol=0.0):
+                # all the backtracking due to feasibility reasons, add penalty
+                if self.verbose >= 2: print("Adding penalty due to feasibility wall.")
                 penalty_vector, _ = self.penalty_vector_func(x0 + opt_step_size * dir)
                 penalty_value = self.optfunc(x0, get_grad=False, get_hess=False, penalty_vectors=[penalty_vector])[0] 
                 epsS = np.sqrt(self.opt_params['penalty_ratio']*np.abs(opt_fx0 / penalty_value))
@@ -280,10 +284,7 @@ class BFGS(_Optimizer):
         self.prev_fx = np.inf
         self.prev_fx_outer = np.inf
 
-        if tol is None: tol = self.opt_params['opttol']
-
         outer_iter_count = 0
-        inner_iter_count = 0
 
         if self.verbose > 0:
             print(f"Starting optimization with x0 = {self.opt_x}")
@@ -332,11 +333,142 @@ class BFGS(_Optimizer):
             
         return self.opt_x, self.opt_fx, self.xgrad
 
-class Newton(_Optimizer):
+
+class Alt_Newton_GD(_Optimizer):
+    """
+    Subclass of `Optimizer`, inherits its behavior.
+
+    Additional Features:
+    ---------------------
+        - run() is implemented via alternating Newton and gradient descent steps; alternating improves stability
+        - _break_condition() is implemented to check for convergence
+    """
+    
     def __init__(self, *params):
         super().__init__(*params)
-        self.hess = np.zeros((self.ndof, self.ndof))
-        raise NotImplementedError("Newton not implemented yet")
+    
+    def _break_condition(self, iter_num, iter_type):
+        if iter_type == 'inner':
+            # Directional stationarity residual convergence
+            if iter_num > self.opt_params['min_inner_iter']:
+                function_value = self.opt_fx 
+                opttol = self.opt_params['opttol']
+                fminus_xxgrad = function_value - np.dot(self.opt_x, self.xgrad)
+                remaining_descent = np.abs(self.opt_x) @ np.abs(self.xgrad)
+                gradConverge = self.opt_params['gradConverge']
+                
+                if self.verbose>=3:
+                    print(f"opt_fx: {self.opt_fx}, fminus_xxgrad: {fminus_xxgrad}, grad norm: {np.linalg.norm(self.xgrad)}")
+                    
+                if gradConverge  and np.abs(function_value - fminus_xxgrad)< opttol * np.abs(fminus_xxgrad) and np.abs(remaining_descent)< opttol * np.abs(fminus_xxgrad) and np.linalg.norm(self.xgrad) < opttol * np.abs(function_value): 
+                    return True 
 
+                elif (not gradConverge) and np.abs(function_value-fminus_xxgrad) < opttol*np.abs(fminus_xxgrad) and np.abs(remaining_descent)<opttol*np.abs(fminus_xxgrad):
+                    return True 
+                
+            # Simple objective value convergence 
+            if iter_num % self.opt_params['break_iter_period'] == 0:
+                if self.verbose > 0 :print(f"iter_num: {iter_num}, prev_fx: {self.prev_fx}, opt_fx: {self.opt_fx}, opttol: {self.opt_params['opttol']}")
+                if np.abs(self.prev_fx - self.opt_fx) < np.abs(self.opt_fx)*self.opt_params['opttol'] or np.isclose(self.opt_fx, 0, atol=1e-14):
+                    return True
+                self.prev_fx = self.opt_fx
 
+        elif iter_type == 'outer':
+            # Outer objective value convergence
+            if np.abs(self.prev_fx_outer - self.opt_fx) < np.abs(self.opt_fx)*self.opt_params['opttol'] or np.isclose(self.opt_fx, 0, atol=1e-14):
+                return True
+            self.prev_fx_outer = self.opt_fx
+            
+            # If a max number of outer iterations was specified, check for that 
+            if iter_num > self.opt_params['max_restart']:
+                if self.verbose >= 2: print(f"Maximum number of outer iterations reached: {self.opt_params['max_restart']}")
+                return True
+        
+        return False
+    
+    def _update_stepsize_add_penalty(self, opt_step_size, last_step_size, feas_step_size, x0, xdir, opt_fx0):
+        if self.verbose >= 3:
+            print(f"last_step_size: {last_step_size}, feas_step_size: {feas_step_size}, opt_step_size: {opt_step_size}")
+        
+        if np.isclose(opt_step_size, last_step_size, atol=0.0):
+            # if no backtracking happened, can start with a more aggressive stepsize
+            return opt_step_size * 2
 
+        if feas_step_size < last_step_size and np.isclose(opt_step_size, feas_step_size, atol=0.0):
+            # all the backtracking due to feasibility reasons, add penalty
+            if self.verbose >= 2: print("Adding penalty due to feasibility wall.")
+            penalty_vector, _ = self.penalty_vector_func(x0 + opt_step_size * xdir)
+            penalty_value = self.optfunc(x0, get_grad=False, get_hess=False, penalty_vectors=[penalty_vector])[0] 
+            epsS = np.sqrt(self.opt_params['penalty_ratio']*np.abs(opt_fx0 / penalty_value))
+            self.penalty_vector_list.append(epsS * penalty_vector)
+
+        return opt_step_size
+
+    
+    def run(self, x0):
+        self.opt_x = x0
+        self.ndof = x0.size
+        self.xgrad = np.zeros(self.ndof)
+        self.xhess = np.zeros((self.ndof,self.ndof))
+        self.prev_fx = np.inf
+        self.prev_fx_outer = np.inf
+        
+        outer_iter_count = 0
+
+        if self.verbose > 0:
+            print(f"Starting optimization with x0 = {self.opt_x}")
+
+        while True: # outer loop - penalty reduction
+            self.penalty_vector_list = [] # reset penalty vectors
+            last_N_step_size = last_GD_step_size = 1.0 # reset step sizes
+            
+            inner_iter_count = 0
+            
+            if self.verbose > 0:
+                print(f"Outer iteration {outer_iter_count}, penalty_ratio = {self.opt_params['penalty_ratio']}, opt_fx = {self.opt_fx}")
+            
+            while True:
+                
+                doN = (inner_iter_count % 2 == 0) # alternate between Newton and GD steps
+                self.opt_fx, self.xgrad, self.xhess, _ = self.optfunc(self.opt_x, get_grad=True,get_hess=doN, penalty_vectors=self.penalty_vector_list)
+                
+                if self.verbose > 1:
+                    print(f"Inner iteration {inner_iter_count}, opt_fx = {self.opt_fx}")
+                
+                if self._break_condition(inner_iter_count, 'inner'):
+                    break
+                
+                # find step for next iteration
+                if doN:
+                    Ndir = np.linalg.solve(self.xhess, -self.xgrad)
+                    xdir = Ndir / np.linalg.norm(Ndir)
+                    last_step_size = last_N_step_size
+                    if self.verbose >= 2:
+                        print("doing Newton step")
+                        #print("xdir dot xgrad is", np.dot(xdir, self.xgrad))
+                else:
+                    if self.verbose >= 2:
+                        print("doing GD step")
+                    xdir = -self.xgrad / np.linalg.norm(self.xgrad)
+                    last_step_size = last_GD_step_size
+                
+                opt_step_size, feas_step_size = self._line_search(xdir, self.opt_x, self.opt_fx, self.xgrad, last_step_size)
+                last_step_size = self._update_stepsize_add_penalty(opt_step_size, last_step_size, feas_step_size, self.opt_x, xdir, self.opt_fx)
+                
+                if doN:
+                    last_N_step_size = last_step_size
+                else:
+                    last_GD_step_size = last_step_size
+                
+                # move on to the next iteration
+                self.opt_x += opt_step_size * xdir
+                inner_iter_count += 1
+            
+            # outer iteration check convergence, reduce penalties, and update iter count
+            if self._break_condition(outer_iter_count, 'outer'):
+                break
+            self.opt_params['penalty_ratio'] *= self.opt_params['penalty_reduction']
+            outer_iter_count += 1
+        
+        return self.opt_x, self.opt_fx, self.xgrad
+        
