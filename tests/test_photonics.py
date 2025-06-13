@@ -6,25 +6,24 @@ def test_photonics_problem_initialization():
     # ...existing test setup...
     wvlgth = 1.0
     omega = 2 * np.pi / wvlgth
-    
-    prob = Photonics_TM_FDFD(omega)
-    assert prob is not None  # Simple check to ensure constructor runs
-    
-    prob.chi = 3+1e-2j
+
+    chi = 3+1e-2j
     gpr = 40
-    prob.dl = 1.0 / gpr
+    dl = 1.0 / gpr
     Mx = My = 1*gpr
 
-    
     Npmlsepx = Npmlsepy = Npmlx = Npmly = int(0.5*gpr)
     Nx = Mx + 2*(Npmlsepx + Npmlx)
     Ny = My + 2*(Npmlsepy + Npmly)
     des_mask = np.zeros((Nx,Ny), dtype=bool)
     des_mask[Npmlx+Npmlsepx:-(Npmlx+Npmlsepx) , Npmly+Npmlsepy:-(Npmly+Npmlsepy)] = True
-    
-    prob.setup_FDFD(Nx=Nx, Ny=Ny, Npmlx=Npmlx, Npmly=Npmly, des_mask=des_mask)
-    
+
     ji = np.zeros((Nx,Ny), dtype=complex)
-    ji[:,Npmly] = 1.0 / prob.dl # planewave line source
+    ji[:,Npmly] = 1.0 / dl # planewave line source
+    
+    prob = Photonics_TM_FDFD(omega = omega, chi = chi, grid_size = (Nx, Ny), pml_size = (Npmlx, Npmly), dl = dl,
+    des_mask = des_mask, ji=ji, chi_background=None, sparseQCQP=True, A0=None, s0=None, c0=0.0)
+    
+    assert prob is not None  # Simple check to ensure constructor runs
     
     ### ADD QCQP SETUP TEST ###
