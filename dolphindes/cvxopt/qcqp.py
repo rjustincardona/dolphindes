@@ -12,7 +12,6 @@ import sksparse.cholmod
 from .optimization import BFGS, Alt_Newton_GD
 from collections import namedtuple
 from typing import Optional, Dict, Any, Tuple # For type hinting the new method
-from numba import jit 
 
 
 class SparseSharedProjQCQP():
@@ -47,6 +46,8 @@ class SparseSharedProjQCQP():
         The Cholesky factorization of the total A matrix, which is updated when needed.
     current_dual : float
         The current dual solution, which is only updated when the dual problem is solved.
+    current_lags : np.ndarray
+        The current Lagrangian multipliers, which is only updated when the dual problem is solved.
     current_grad : np.ndarray
         The current grad_lambda of the dual solution, which is only updated when the dual problem is solved.
     current_hess : np.ndarray
