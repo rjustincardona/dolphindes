@@ -10,6 +10,7 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import sksparse.cholmod 
 from .optimization import BFGS, Alt_Newton_GD
+from dolphindes.util import Sym
 from collections import namedtuple
 from typing import Optional, Dict, Any, Tuple # For type hinting the new method
 
@@ -80,7 +81,7 @@ class SparseSharedProjQCQP():
         #self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
         self.precomputed_As = []
         for i in range(self.Pdiags.shape[1]):
-            Ak = self._Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
+            Ak = Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
             #self.precomputed_As[i] = Ak
             self.precomputed_As.append(Ak)
         
@@ -98,10 +99,6 @@ class SparseSharedProjQCQP():
     def get_number_constraints(self) -> int:
         """Returns the number of constraints in the QCQP"""
         return self.Pdiags.shape[1]
-    
-    def _Sym(self, A: sp.csc_array) -> sp.csc_array:
-        """Gets the symmetric part of A"""
-        return (A + A.T.conj()) / 2
     
     def _add_projectors(self, lags: np.ndarray) -> np.ndarray:
         """Combine the lagrange multipliers and the projectors into a joint projector
