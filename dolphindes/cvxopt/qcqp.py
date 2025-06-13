@@ -77,10 +77,12 @@ class SparseSharedProjQCQP():
 
     def compute_precomputed_values(self):
         # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
-        self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
+        #self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
+        self.precomputed_As = []
         for i in range(self.Pdiags.shape[1]):
             Ak = self._Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
-            self.precomputed_As[i] = Ak
+            #self.precomputed_As[i] = Ak
+            self.precomputed_As.append(Ak)
         
         # Stack all precomputed_As horizontally for vectorized operations
         # This creates a matrix where each column k corresponds to A_k @ x
