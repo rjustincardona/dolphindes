@@ -464,7 +464,7 @@ class SparseSharedProjQCQP():
         
         return self.Pdiags, self.current_lags
 
-    def iterative_splitting_step(self, method : str = 'bfgs'):
+    def iterative_splitting_step(self, method : str = 'bfgs', max_cstrt_num : int = np.inf):
         """
         Iterative splitting step generator function that continues until pixel-level constraints are reached.
 
@@ -473,21 +473,28 @@ class SparseSharedProjQCQP():
             2. Solves the new dual problem and yields the results 
             3. Continues until all projectors are "one-hot" matrices (pixel-level constraints)
 
+        Parameters
+        ----------
+        method : str
+            Optimizer used for solving each iterative splitting step
+        max_cstrt_num : int or np.inf
+            termination condition based on maximum number of constraints.
+            If np.inf, defaults to pixel level constraints
         Yields
         ------
         tuple
             Result of solve_current_dual_problem: 
             (current_dual, current_lags, current_grad, current_hess, current_xstar)
         """
-
-        # Check if we're already at pixel level (each projector corresponds to a single pixel)
-        if self.Pdiags.shape[1] >= 2 * self.Pdiags.shape[0]:
+        max_cstrt_num = min(max_cstrt_num, 2 * self.Pdiags.shape[0])
+        # Check if we're already at termination condition
+        if self.Pdiags.shape[1] >= max_cstrt_num:
             if self.verbose > 0:
-                print("All projectors are already at pixel level. No more splitting possible.")
+                print("Projector number already above specified max or pixel level.")
             return
-                    
-        # Continue splitting until we reach pixel level
-        while self.Pdiags.shape[1] < 2 * self.Pdiags.shape[0]:
+
+        # Continue splitting until number of constraints exceeds or equals max_cstrt_num
+        while self.Pdiags.shape[1] < max_cstrt_num:
             if self.verbose > 0:
                 if self.Pdiags.shape[1] == 2:
                     print(f"Splitting projectors: {self.Pdiags.shape[1]} → {self.Pdiags.shape[1] + self.Pdiags.shape[1]}")
@@ -504,9 +511,9 @@ class SparseSharedProjQCQP():
             yield result
 
             # Check if we've reached pixel level after this iteration
-            if self.Pdiags.shape[1] >= 2 * self.Pdiags.shape[0]:
+            if self.Pdiags.shape[1] >= max_cstrt_num:
                 if self.verbose > 0:
-                    print("Reached pixel-level projectors. Refinement complete.")
+                    print("Reached max number of projectors or pixel-level projectors. Refinement complete.")
                 break
 
     def solve_primal_gurobi(self, gurobi_params: Optional[Dict[str, Any]] = None) -> Tuple[Optional[np.ndarray], Optional[float], str]:
