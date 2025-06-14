@@ -57,9 +57,3 @@ def merge_lead_constraints(QCQP: SparseSharedProjQCQP, merged_num: int = 2):
     QCQP.Pdiags = new_Pdiags
     QCQP.current_lags = new_lags
     QCQP.current_grad = QCQP.current_hess = None # in principle can merge dual derivatives but leave it undone for now
-    QCQP.Pdiags = new_Pdiags
-    QCQP.current_lags = new_lags
-    QCQP.current_grad = QCQP.current_hess = None
-    # in principle can merge dual derivatives but leave it undone for now
-
-    
