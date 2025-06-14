@@ -123,3 +123,14 @@ def test_sparse_qcqp(sparse_qcqp_data):
         if sparse_ldos_qcqp.Pdiags.shape[1] > 200: # limit to avoid excessive iterations. Run entire test for most rigorous test. 
             break
     print(results)
+
+    print("Testing the merging of constraints")
+    from dolphindes.cvxopt import merge_lead_constraints
+    dual_opt, dual_grad, dual_hess, _ = sparse_ldos_qcqp.get_dual(sparse_ldos_qcqp.current_lags, get_grad=True, get_hess=True)
+    
+    merge_lead_constraints(sparse_ldos_qcqp, 5)
+    merged_dual, merged_grad, merged_hess, _ = sparse_ldos_qcqp.get_dual(sparse_ldos_qcqp.current_lags, get_grad=True, get_hess=True)
+    assert np.allclose(dual_opt, merged_dual, atol=1e-2) , "dual value changed after constraint merge."
+    assert np.allclose(dual_grad[-5:], merged_grad[-5:], atol=1e-2), "dual grad changed after constraint merge."
+    assert np.allclose(dual_hess[-5:,-5:], merged_hess[-5:,-5:], rtol=1e-2), "dual Hess changed after constraint merge."
+    
