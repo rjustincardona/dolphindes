@@ -5,9 +5,7 @@ refining dual bounds of SharedProjQCQPs
 
 import numpy as np
 import scipy.linalg as la
-import scipy.sparse as sp
 from .qcqp import SparseSharedProjQCQP
-from dolphindes.util import Sym
 
 
 def merge_lead_constraints(QCQP: SparseSharedProjQCQP, m: int = 2):
@@ -35,13 +33,17 @@ def merge_lead_constraints(QCQP: SparseSharedProjQCQP, m: int = 2):
     new_lags[1:] = QCQP.current_lags[m:]
     
     # update QCQP
+    if hasattr(QCQP, 'precomputed_As'):
+        # updated precomputed_As
+        QCQP.precomputed_As[m-1] *= QCQP.current_lags[m-1]
+        for i in range(m-1):
+            QCQP.precomputed_As[m-1] += QCQP.precomputed_As[i] * QCQP.current_lags[i]
+        QCQP.precomputed_As[m-1] /= Pnorm
+        del QCQP.precomputed_As[:m-1]
+        
     QCQP.Pdiags = new_Pdiags
     QCQP.current_lags = new_lags
     QCQP.current_grad = QCQP.current_hess = None
     # in principle can merge dual derivatives but leave it undone for now
 
-    if hasattr(QCQP, 'precomputed_As'):
-        # updated precomputed_As
-        del QCQP.precomputed_As[:m-1]
-        QCQP.precomputed_As[0] = Sym(QCQP.A1 @ sp.diags_array(QCQP.Pdiags[:,0], format='csr') @ QCQP.A2)
-
+    
