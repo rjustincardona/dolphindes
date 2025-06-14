@@ -1,11 +1,15 @@
 """
 Methods for performing generalized constraint descent (GCD) for 
 refining dual bounds of SharedProjQCQPs
+
+TODO: consider moving merge_lead_constraints and add_constraints into QCQP class methods
 """
 
 import numpy as np
 import scipy.linalg as la
+import scipy.sparse as sp
 from .qcqp import SparseSharedProjQCQP
+from dolphindes.util import Sym
 
 
 def merge_lead_constraints(QCQP: SparseSharedProjQCQP, merged_num: int = 2):
@@ -57,3 +61,80 @@ def merge_lead_constraints(QCQP: SparseSharedProjQCQP, merged_num: int = 2):
     QCQP.Pdiags = new_Pdiags
     QCQP.current_lags = new_lags
     QCQP.current_grad = QCQP.current_hess = None # in principle can merge dual derivatives but leave it undone for now
+
+
+"""
+TODO:
+Use the QR decomposition to orthonormalize Pdiags
+"""
+def CRdot(v1: np.ndarray, v2: np.ndarray):
+    """
+    Computes the inner product of two complex vectors over a real field.
+    In other words, the vectors have complex numbers but linear combination coefficients have to be real.
+    This is the vector space for the complex QCQP constraints since Lagrangian multipliers are real.
+    
+    Parameters
+    ----------
+    v1 : np.ndarray
+        vector1
+    v2 : np.ndarray
+        vector2
+
+    Returns
+    -------
+    The inner product
+    """
+    return np.real(np.vdot(v1,v2))
+
+def add_constraints(QCQP: SparseSharedProjQCQP, added_Pdiag_list: list, orthonormalize: bool=True):
+    """
+    method that adds new constraints into an existing QCQP. 
+    
+    Parameters
+    ----------
+    QCQP : SparseSharedProjQCQP
+        QCQP for which the new constraints are added in.
+    added_Pdiag_list : list
+        List of 1d numpy arrays that are the new constraints to be added in
+    orthonormalize : bool
+        If true, assume that QCQP has orthonormal constraints and keeps it that way.
+    """
+    x_size, cstrt_num = QCQP.Pdiags.shape
+    added_Pdiag_num = len(added_Pdiag_list)
+    
+    if not (QCQP.current_lags is None):
+        new_lags = np.zeros(cstrt_num + added_Pdiag_num, dtype=float)
+        new_lags[:cstrt_num] = QCQP.current_lags
+    else:
+        new_lags = None
+    
+    new_Pdiags = np.zeros((x_size, cstrt_num + added_Pdiag_num), dtype=complex)
+    new_Pdiags[:,:cstrt_num] = QCQP.Pdiags
+    if not orthonormalize:
+        for m,added_Pdiag in enumerate(added_Pdiag_list):
+            new_Pdiags[:,cstrt_num+m] = added_Pdiag
+    
+    else:
+        for m,added_Pdiag in enumerate(added_Pdiag_list):
+            # do Gram-Schmidt orthogonalization for each added Pdiag
+            for j in range(cstrt_num+m):
+                added_Pdiag -= CRdot(new_Pdiags[:,j],added_Pdiag) * new_Pdiags[:,j]
+            added_Pdiag /= la.norm(added_Pdiag)
+            
+            new_Pdiags[:,cstrt_num+m] = added_Pdiag
+    
+    # update QCQP
+    if hasattr(QCQP, 'precomputed_As'):
+        # updated precomputed_As
+        for added_Pdiag in added_Pdiag_list:
+            QCQP.precomputed_As.append(Sym(QCQP.A1 @ sp.diags_array(added_Pdiag, format='csr') @ QCQP.A2))
+    
+    if hasattr(QCQP, 'Fs'):
+        new_Fs = np.zeros((x_size, cstrt_num + added_Pdiag_num), dtype=complex)
+        new_Fs[:,:cstrt_num] = QCQP.Fs
+        new_Fs[:,cstrt_num:] = QCQP.A2.conj().T @ (new_Pdiags[:,cstrt_num:].conj().T * QCQP.s1).T
+        QCQP.Fs = new_Fs
+    
+    QCQP.Pdiags = new_Pdiags
+    QCQP.current_lags = new_lags
+    QCQP.current_grad = QCQP.current_hess = None
