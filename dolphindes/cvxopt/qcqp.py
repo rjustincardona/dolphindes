@@ -5,6 +5,7 @@ Dual Problem Interface
 
 __all__ = ['SparseSharedProjQCQP'] 
 
+import copy
 import numpy as np 
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
@@ -75,6 +76,16 @@ class SparseSharedProjQCQP():
         
     def __repr__(self):
         return f"SparseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
+
+    def __deepcopy__(self, memo):
+        # custom __deepcopy__ because Achofac is not pickle-able
+        new_QCQP = SparseSharedProjQCQP.__new__(SparseSharedProjQCQP)
+        for name, value in self.__dict__.items():
+            if name != 'Achofac':
+                setattr(new_QCQP, name, copy.deepcopy(value, memo))
+        
+        new_QCQP._update_chofac()
+        return new_QCQP
 
     def compute_precomputed_values(self):
         # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
