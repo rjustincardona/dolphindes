@@ -10,9 +10,9 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import sksparse.cholmod 
 from .optimization import BFGS, Alt_Newton_GD
+from dolphindes.util import Sym
 from collections import namedtuple
 from typing import Optional, Dict, Any, Tuple # For type hinting the new method
-from numba import jit 
 
 
 class SparseSharedProjQCQP():
@@ -47,6 +47,8 @@ class SparseSharedProjQCQP():
         The Cholesky factorization of the total A matrix, which is updated when needed.
     current_dual : float
         The current dual solution, which is only updated when the dual problem is solved.
+    current_lags : np.ndarray
+        The current Lagrangian multipliers, which is only updated when the dual problem is solved.
     current_grad : np.ndarray
         The current grad_lambda of the dual solution, which is only updated when the dual problem is solved.
     current_hess : np.ndarray
@@ -76,10 +78,12 @@ class SparseSharedProjQCQP():
 
     def compute_precomputed_values(self):
         # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
-        self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
+        #self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
+        self.precomputed_As = []
         for i in range(self.Pdiags.shape[1]):
-            Ak = self._Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
-            self.precomputed_As[i] = Ak
+            Ak = Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
+            #self.precomputed_As[i] = Ak
+            self.precomputed_As.append(Ak)
         
         # Stack all precomputed_As horizontally for vectorized operations
         # This creates a matrix where each column k corresponds to A_k @ x
@@ -95,10 +99,6 @@ class SparseSharedProjQCQP():
     def get_number_constraints(self) -> int:
         """Returns the number of constraints in the QCQP"""
         return self.Pdiags.shape[1]
-    
-    def _Sym(self, A: sp.csc_array) -> sp.csc_array:
-        """Gets the symmetric part of A"""
-        return (A + A.T.conj()) / 2
     
     def _add_projectors(self, lags: np.ndarray) -> np.ndarray:
         """Combine the lagrange multipliers and the projectors into a joint projector
@@ -464,7 +464,7 @@ class SparseSharedProjQCQP():
         
         return self.Pdiags, self.current_lags
 
-    def iterative_splitting_step(self, method : str = 'bfgs'):
+    def iterative_splitting_step(self, method : str = 'bfgs', max_cstrt_num : int = np.inf):
         """
         Iterative splitting step generator function that continues until pixel-level constraints are reached.
 
@@ -473,21 +473,28 @@ class SparseSharedProjQCQP():
             2. Solves the new dual problem and yields the results 
             3. Continues until all projectors are "one-hot" matrices (pixel-level constraints)
 
+        Parameters
+        ----------
+        method : str
+            Optimizer used for solving each iterative splitting step
+        max_cstrt_num : int or np.inf
+            termination condition based on maximum number of constraints.
+            If np.inf, defaults to pixel level constraints
         Yields
         ------
         tuple
             Result of solve_current_dual_problem: 
             (current_dual, current_lags, current_grad, current_hess, current_xstar)
         """
-
-        # Check if we're already at pixel level (each projector corresponds to a single pixel)
-        if self.Pdiags.shape[1] >= 2 * self.Pdiags.shape[0]:
+        max_cstrt_num = min(max_cstrt_num, 2 * self.Pdiags.shape[0])
+        # Check if we're already at termination condition
+        if self.Pdiags.shape[1] >= max_cstrt_num:
             if self.verbose > 0:
-                print("All projectors are already at pixel level. No more splitting possible.")
+                print("Projector number already above specified max or pixel level.")
             return
-                    
-        # Continue splitting until we reach pixel level
-        while self.Pdiags.shape[1] < 2 * self.Pdiags.shape[0]:
+
+        # Continue splitting until number of constraints exceeds or equals max_cstrt_num
+        while self.Pdiags.shape[1] < max_cstrt_num:
             if self.verbose > 0:
                 if self.Pdiags.shape[1] == 2:
                     print(f"Splitting projectors: {self.Pdiags.shape[1]} → {self.Pdiags.shape[1] + self.Pdiags.shape[1]}")
@@ -504,9 +511,9 @@ class SparseSharedProjQCQP():
             yield result
 
             # Check if we've reached pixel level after this iteration
-            if self.Pdiags.shape[1] >= 2 * self.Pdiags.shape[0]:
+            if self.Pdiags.shape[1] >= max_cstrt_num:
                 if self.verbose > 0:
-                    print("Reached pixel-level projectors. Refinement complete.")
+                    print("Reached max number of projectors or pixel-level projectors. Refinement complete.")
                 break
 
     def solve_primal_gurobi(self, gurobi_params: Optional[Dict[str, Any]] = None) -> Tuple[Optional[np.ndarray], Optional[float], str]:
