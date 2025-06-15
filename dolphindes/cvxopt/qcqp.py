@@ -15,15 +15,126 @@ from dolphindes.util import Sym
 from collections import namedtuple
 from typing import Optional, Dict, Any, Tuple # For type hinting the new method
 
-
-class SparseSharedProjQCQP():
-    """Represents a QCQP with a single type of constraint over projection regions.
+class _SharedProjQCQP():
+    """Represents a QCQP with a single type of constraint over projection regions. 
+    Parent class, should not be instantiated directly as it is missing key functionality. 
 
     Problem is 
     max_x -x^dagger A0 x + 2 Re (x^dagger s0) + c0
     s.t.  Re(-x^dagger A1 P_j A_2 x) + 2 Re (x^dagger A_2^dagger P_j^dagger s1) = 0
 
     for a list of projection matrices P_j. 
+
+    Attributes
+    ----------
+    A0 : LinearOperator
+        The matrix A0 in the QCQP. 
+    s0 : np.ndarray
+        The vector s in the QCQP.
+    c0 : float
+        The constant c in the QCQP.
+    A1 : scipy.sparse.csc_array
+        The matrix A1 in the QCQP.
+    A2 : scipy.sparse.csc_array
+        The matrix A2 in the QCQP.
+    s1 : np.ndarray
+        The vector s1 in the QCQP.
+    Pdiags : np.ndarray
+        The diagonal elements of the projection matrices P_j, as columns of a matrix Pdiags
+        The second column j should always be one such that A0 + lambda A1 P_j is positive semidefinite for sufficiently large constant lambda.
+    verbose : float
+        The verbosity level for debugging and logging.
+    Achofac : sksparse.cholmod.Cholesky | np.ndarray
+        The Cholesky factorization of the total A matrix, which is updated when needed.
+    current_dual : float
+        The current dual solution, which is only updated when the dual problem is solved.
+    current_lags : np.ndarray
+        The current Lagrangian multipliers, which is only updated when the dual problem is solved.
+    current_grad : np.ndarray
+        The current grad_lambda of the dual solution, which is only updated when the dual problem is solved.
+    current_hess : np.ndarray
+        The current hess_lambda of the dual solution, which is only updated when the dual problem is solved. 
+    """
+    def __init__(self, A0: np.ndarray | sp.csc_array, s0: np.ndarray, c0: float, A1: sp.csc_array, A2: sp.csc_array, 
+                 s1: np.ndarray, Pdiags: np.ndarray, verbose: float = 0):
+        self.A0 = A0
+        self.s0 = s0
+        self.s1 = s1
+        self.c0 = c0
+        self.A1 = sp.csc_array(A1)
+        self.A2 = sp.csc_array(A2)
+        self.verbose = verbose
+        self.Pdiags = Pdiags
+        self.Achofac = None
+        self.current_dual = None 
+        self.current_grad = None 
+        self.current_hess = None
+        self.current_lags = None 
+        self.current_xstar = None 
+
+    def __deepcopy__(self, memo):
+        # custom __deepcopy__ because Achofac is not pickle-able
+        new_QCQP = SparseSharedProjQCQP.__new__(SparseSharedProjQCQP)
+        for name, value in self.__dict__.items():
+            if name != 'Achofac':
+                setattr(new_QCQP, name, copy.deepcopy(value, memo))
+        
+        new_QCQP._update_chofac()  # Recompute the Cholesky factorization. If dense, will use self.current_lags. 
+        return new_QCQP
+    
+    def get_number_constraints(self) -> int:
+        """Returns the number of constraints in the QCQP"""
+        return self.Pdiags.shape[1]
+    
+    def _add_projectors(self, lags: np.ndarray) -> np.ndarray:
+        """Combine the lagrange multipliers and the projectors into a joint projector
+
+        Parameters
+        ----------
+        lags : np.ndarray
+            The lagrange multipliers for the projectors.
+        
+        Returns
+        -------
+        np.ndarray
+            The diagonal elements of the combined projector matrix sum_j lag[j] P_j 
+        """
+        return self.Pdiags @ lags
+    
+    def find_feasible_lags(self, start: float = 0.1, limit: float = 1e8) -> np.ndarray:
+        """
+        Find a feasible point for the dual problem. This assumes that for large enough lags[1], A is PSD.
+
+        Parameters
+        ----------
+        start : float (optional, default 1.0)
+            The start value for lags[1]
+        limit : float (optional, default 1e8)
+            A maximum value for lags[1] before the method gives up and raises an error.
+
+        Returns
+        -------
+        init_lags : np.ndarray
+            A set of Lagrange multipliers such that A is PSD.
+        """
+        init_lags = np.random.random(self.Pdiags.shape[1]) * 1e-6  # Start with small positive lags
+        init_lags[1] = start
+        while self.is_dual_feasible(init_lags) is False:
+            init_lags[1] *= 1.5
+            if init_lags[1] > limit:
+                raise ValueError("Could not find a feasible point for the dual problem.")
+            
+        if self.verbose > 0: print(f"Found feasible point for dual problem: {init_lags} with dualvalue {self.get_dual(init_lags)[0]}")
+        return init_lags
+    
+class SparseSharedProjQCQP(_SharedProjQCQP):
+    """Represents a QCQP with a single type of constraint over projection regions.
+
+    Problem is 
+    max_x -x^dagger A0 x + 2 Re (x^dagger s0) + c0
+    s.t.  Re(-x^dagger A1 P_j A_2 x) + 2 Re (x^dagger A_2^dagger P_j^dagger s1) = 0
+
+    for a list of projection matrices P_j. Representas 
 
     Attributes
     ----------
@@ -57,48 +168,19 @@ class SparseSharedProjQCQP():
     """
     def __init__(self, A0: sp.csc_array, s0: np.ndarray, c0: float, A1: sp.csc_array, A2: sp.csc_array, 
                  s1: np.ndarray, Pdiags: np.ndarray, verbose: float = 0):
-        self.A0 = sp.csc_array(A0)
-        self.s0 = s0
-        self.s1 = s1
-        self.c0 = c0
-        self.A1 = sp.csc_array(A1)
-        self.A2 = sp.csc_array(A2)
-        self.verbose = verbose
-        self.Pdiags = Pdiags
-        self.Achofac = None
-        self.current_dual = None 
-        self.current_grad = None 
-        self.current_hess = None
-        self.current_lags = None 
-        self.current_xstar = None 
-
+        super().__init__(A0, s0, c0, A1, A2, s1, Pdiags, verbose)
+        self.A0 = sp.csc_array(A0) # Convert in case the user passes a dense array or other format 
         self.compute_precomputed_values()  # Precompute values for efficiency
         
     def __repr__(self):
         return f"SparseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
 
-    def __deepcopy__(self, memo):
-        # custom __deepcopy__ because Achofac is not pickle-able
-        new_QCQP = SparseSharedProjQCQP.__new__(SparseSharedProjQCQP)
-        for name, value in self.__dict__.items():
-            if name != 'Achofac':
-                setattr(new_QCQP, name, copy.deepcopy(value, memo))
-        
-        new_QCQP._update_chofac()
-        return new_QCQP
-
     def compute_precomputed_values(self):
         # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
-        #self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
-        self.precomputed_As = []
+        self.precomputed_As = np.empty(self.Pdiags.shape[1], dtype=object)
         for i in range(self.Pdiags.shape[1]):
             Ak = Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
-            #self.precomputed_As[i] = Ak
-            self.precomputed_As.append(Ak)
-        
-        # Stack all precomputed_As horizontally for vectorized operations
-        # This creates a matrix where each column k corresponds to A_k @ x
-        # self.stacked_As = sp.hstack(self.precomputed_As, format='csc')
+            self.precomputed_As[i] = Ak
         
         print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
 
@@ -107,24 +189,6 @@ class SparseSharedProjQCQP():
 
         self._update_chofac()
 
-    def get_number_constraints(self) -> int:
-        """Returns the number of constraints in the QCQP"""
-        return self.Pdiags.shape[1]
-    
-    def _add_projectors(self, lags: np.ndarray) -> np.ndarray:
-        """Combine the lagrange multipliers and the projectors into a joint projector
-
-        Parameters
-        ----------
-        lags : np.ndarray
-            The lagrange multipliers for the projectors.
-        
-        Returns
-        -------
-        np.ndarray
-            The diagonal elements of the combined projector matrix sum_j lag[j] P_j 
-        """
-        return self.Pdiags @ lags
 
     def _get_total_A(self, lags: np.ndarray) -> sp.csc_array:
         """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given sum_j lag[j] P_j"""
@@ -316,8 +380,6 @@ class SparseSharedProjQCQP():
         bool
             True if the total A matrix is positive semidefinite (dual feasible).
         """
-        # P_diag = self._add_projectors(lags)
-        # P = sp.diags_array(P_diag)
         A = self._get_total_A(lags)
         try:
             Acho = self.Achofac.cholesky(A)
@@ -325,32 +387,6 @@ class SparseSharedProjQCQP():
             return True
         except sksparse.cholmod.CholmodNotPositiveDefiniteError:
             return False
-
-    def find_feasible_lags(self, start: float = 0.1, limit: float = 1e8) -> np.ndarray:
-        """
-        Find a feasible point for the dual problem. This assumes that for large enough lags[1], A is PSD.
-
-        Parameters
-        ----------
-        start : float (optional, default 1.0)
-            The start value for lags[1]
-        limit : float (optional, default 1e8)
-            A maximum value for lags[1] before the method gives up and raises an error.
-
-        Returns
-        -------
-        init_lags : np.ndarray
-            A set of Lagrange multipliers such that A is PSD.
-        """
-        init_lags = np.random.random(self.Pdiags.shape[1]) * 1e-6  # Start with small positive lags
-        init_lags[1] = start
-        while self.is_dual_feasible(init_lags) is False:
-            init_lags[1] *= 1.5
-            if init_lags[1] > limit:
-                raise ValueError("Could not find a feasible point for the dual problem.")
-            
-        if self.verbose > 0: print(f"Found feasible point for dual problem: {init_lags} with dualvalue {self.get_dual(init_lags)[0]}")
-        return init_lags
 
     def solve_current_dual_problem(self, method: str, opt_params: dict = None, init_lags: np.ndarray = None):
         """
@@ -591,66 +627,4 @@ class DenseSharedProjQCQP():
     projections_diags : np.ndarray
         The diagonal elements of the projection matrices P_j. The first one should always be one such that A0 + lambda A1 P_0 is positive semidefinite for sufficiently large constant lambda. 
     """
-    def __init__(self, A0, s0, c, A1, s1, projections_diags: np.ndarray, verbose: float = 0):
-        self.A0 = A0
-        self.s0 = s0
-        self.s1 = s1
-        self.c = c
-        self.A1 = A1
-        self.verbose = verbose
-        self.projections_diags = projections_diags
-        self.current_dual = None 
-
-    def _add_projectors(self, lags: np.ndarray) -> np.ndarray:
-        """Combine the lagrange multipliers and the projectors into a joint projector
-
-        Parameters
-        ----------
-        lags : np.ndarray
-            The lagrange multipliers for the projectors.
-        
-        Returns
-        -------
-        np.ndarray
-            The diagonal elements of the combined projector matrix sum_j lag[j] P_j 
-        """
-        return np.sum(lags[:, np.newaxis] * self.projections_diags, axis=0)
-
-    def _get_total_A(self, P: sp.csc_array) -> sp.csc_array:
-        """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j given sum_j lag[j] P_j"""
-        return self.A0 + self.A1 @ P
-    
-    def _get_total_S(self, P: sp.csc_array) -> np.ndarray:
-        """Gets the total S vector for the QCQP = s0 + sum_j lag[j] P_j^dagger s1 given P = sum_j lag[j] P_j"""
-        return self.s0 + P.T.conj() @ self.s1
-
-    def _get_xstar(self, A: sp.csc_array, S: np.ndarray):
-        """For a total A and S, solve for xstar using the cholesky factorization of A
-        
-        For a given set of Lagrange multipliers, which define A and S, the x_star that maximizes the Lagrangian 
-        (and therefore defines the dual) is given by A x_star = S. Since the symbolic Cholesky factorization 
-        of A is known, because the sparsity pattern of A is always known, this solution can be found very
-        efficiently. 
-
-        Returns
-        -------
-        Acho : sksparse.cholmod.Cholesky
-            The cholesky factorization of A.
-        x_star : np.ndarray
-            The solution x_star to the equation A x_star = S.
-        """
-        pass 
-        
-    def get_dual(self, lags: np.ndarray, get_grad: bool = False, get_hess: bool = False, penalty_s: list = None) -> tuple[float, np.ndarray, np.ndarray]:
-        """Gets the dual value and the derivatives of the dual with respect to Lagrange multipliers.
-
-        Parameters
-        ----------
-
-        Returns
-        -------
-        """
-        pass 
-
-    def solve_current_dual_problem(self, method: str) -> None:
-        pass
+    pass 
