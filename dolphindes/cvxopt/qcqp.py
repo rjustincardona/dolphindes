@@ -79,7 +79,7 @@ class _SharedProjQCQP():
             if name != 'Acho':
                 setattr(new_QCQP, name, copy.deepcopy(value, memo))
         
-        new_QCQP._initialize_chofac()  # Recompute the Cholesky factorization. If dense, will use self.current_lags. 
+        new_QCQP._initialize_Acho()  # Recompute the Cholesky factorization. If dense, will use self.current_lags. 
         return new_QCQP
     
     def get_number_constraints(self) -> int:
@@ -100,6 +100,34 @@ class _SharedProjQCQP():
             The diagonal elements of the combined projector matrix sum_j lag[j] P_j 
         """
         return self.Pdiags @ lags
+    
+    def _update_Acho(self, A):
+        """
+        Updates the Cholesky factorization to be that of the input matrix A.
+        Needs to be implemented by subclasses.
+        
+        Parameters
+        ----------
+        A : sp.csc_array or np.ndarray
+            New total A.
+        """
+        pass
+    
+    def _Acho_solve(self, b):
+        """
+        Computes A^{-1} b using Acho. 
+        Needs to be implemented by subclasses.
+
+        Parameters
+        ----------
+        b : np.ndarray
+            Right-hand-side of linear system.
+
+        Returns
+        -------
+        A^{-1} b
+        """
+        pass
     
     def find_feasible_lags(self, start: float = 0.1, limit: float = 1e8) -> np.ndarray:
         """
@@ -187,7 +215,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         # (Fs)_k = A_2^dagger P_k^dagger s1
         self.Fs = self.A2.conj().T @ (self.Pdiags.conj().T * self.s1).T
 
-        self._initialize_chofac()
+        self._initialize_Acho()
 
 
     def _get_total_A(self, lags: np.ndarray) -> sp.csc_array:
@@ -198,7 +226,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         """Gets the total S vector for the QCQP = s0 + sum_j lag[j] P_j^dagger s1 given P = sum_j lag[j] P_j"""
         return self.s0 + self.A2.T.conj() @ (Pdiag.conj() * self.s1)
 
-    def _initialize_chofac(self) -> sksparse.cholmod.Factor:
+    def _initialize_Acho(self) -> sksparse.cholmod.Factor:
         """
         Analyzes the non-zero structure of A and initializes self.Acho with the 
         optimal fill-reducing permutation for A using sksparse.cholmod
@@ -208,6 +236,32 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         A = self._get_total_A(random_lags)
         if self.verbose > 1: print(f"analyzing A of format and shape {type(A)}, {A.shape} and # of nonzero elements '{A.count_nonzero()}")
         self.Acho = sksparse.cholmod.analyze(A)
+
+    def _update_Acho(self, A):
+        """
+        updates the Cholesky factorization to be that of the input matrix A.
+
+        Parameters
+        ----------
+        A : sp.csc_array
+            New total A.
+        """
+        self.Acho.cholesky_inplace(A)
+    
+    def _Acho_solve(self, b):
+        """
+        computes A^{-1} b using Acho
+
+        Parameters
+        ----------
+        b : np.ndarray
+            Right-hand-side of linear system.
+
+        Returns
+        -------
+        A^{-1} b
+        """
+        return self.Acho.solve_A(b)
 
     def _get_xstar(self, lags: np.ndarray) -> tuple[sksparse.cholmod.Factor, np.ndarray, float]:
         """For a total A and S, solve for xstar using the cholesky factorization of A
@@ -232,8 +286,8 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         A = self._get_total_A(lags)
         S = self._get_total_S(P_diag)
 
-        self.Acho.cholesky_inplace(A) #update the Cholesky factorization
-        x_star = self.Acho.solve_A(S)
+        self._update_Acho(A) #update the Cholesky factorization
+        x_star = self._Acho_solve(S)
         xAx = np.real(x_star.conjugate() @ A @ x_star)
 
         return x_star, xAx
@@ -285,8 +339,8 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
             grad = np.real(xstar.conj() @ (Fx + 2*self.Fs)) #get_hess implies get_grad also
             
             Ftot = Fx + self.Fs
-            hess = 2*np.real(Ftot.conj().T @ self.Acho.solve_A(Ftot))
-                
+            hess = 2*np.real(Ftot.conj().T @ self._Acho_solve(Ftot))
+
         elif get_grad: # This is grad_lambda (not grad_x); elif since get_hess automatically computes grad
             # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))). Second term: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
             # self.Pdiags has shape (N_diag, N_projectors), A2_xstar has shape (N_diag,)
@@ -306,7 +360,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         dualval_penalty = 0.0 
         if len(penalty_vectors) > 0:
             penalty_matrix = np.column_stack(penalty_vectors)
-            A_inv_penalty = self.Acho.solve_A(penalty_matrix)
+            A_inv_penalty = self._Acho_solve(penalty_matrix)
             dualval_penalty += np.sum(np.real(A_inv_penalty.conj() * penalty_matrix)) # multiplies columns with columns, sums all at once
 
             if get_hess:
@@ -320,7 +374,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
                         Fv[:,k] = Ak @ A_inv_penalty[:,j]
                     
                     grad_penalty += np.real(-A_inv_penalty[:,j].conj().T @ Fv)
-                    hess_penalty += 2*np.real(Fv.conj().T @ self.Acho.solve_A(Fv))
+                    hess_penalty += 2*np.real(Fv.conj().T @ self._Acho_solve(Fv))
                     
             elif get_grad: 
                 grad_penalty = np.zeros(len(grad))
