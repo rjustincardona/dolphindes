@@ -44,7 +44,7 @@ class _SharedProjQCQP():
         The second column j should always be one such that A0 + lambda A1 P_j is positive semidefinite for sufficiently large constant lambda.
     verbose : float
         The verbosity level for debugging and logging.
-    Achofac : sksparse.cholmod.Cholesky | np.ndarray
+    Acho : sksparse.cholmod.Cholesky | np.ndarray
         The Cholesky factorization of the total A matrix, which is updated when needed.
     current_dual : float
         The current dual solution, which is only updated when the dual problem is solved.
@@ -65,7 +65,7 @@ class _SharedProjQCQP():
         self.A2 = sp.csc_array(A2)
         self.verbose = verbose
         self.Pdiags = Pdiags
-        self.Achofac = None
+        self.Acho = None
         self.current_dual = None 
         self.current_grad = None 
         self.current_hess = None
@@ -73,10 +73,10 @@ class _SharedProjQCQP():
         self.current_xstar = None 
 
     def __deepcopy__(self, memo):
-        # custom __deepcopy__ because Achofac is not pickle-able
+        # custom __deepcopy__ because Acho is not pickle-able
         new_QCQP = SparseSharedProjQCQP.__new__(SparseSharedProjQCQP)
         for name, value in self.__dict__.items():
-            if name != 'Achofac':
+            if name != 'Acho':
                 setattr(new_QCQP, name, copy.deepcopy(value, memo))
         
         new_QCQP._initialize_chofac()  # Recompute the Cholesky factorization. If dense, will use self.current_lags. 
@@ -155,7 +155,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         The second column j should always be one such that A0 + lambda A1 P_j is positive semidefinite for sufficiently large constant lambda.
     verbose : float
         The verbosity level for debugging and logging.
-    Achofac : sksparse.cholmod.Cholesky
+    Acho : sksparse.cholmod.Factor
         The Cholesky factorization of the total A matrix, which is updated when needed.
     current_dual : float
         The current dual solution, which is only updated when the dual problem is solved.
@@ -207,7 +207,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         # P = self._add_projectors(random_lags)
         A = self._get_total_A(random_lags)
         if self.verbose > 1: print(f"analyzing A of format and shape {type(A)}, {A.shape} and # of nonzero elements '{A.count_nonzero()}")
-        self.Achofac = sksparse.cholmod.analyze(A)
+        self.Acho = sksparse.cholmod.analyze(A)
 
     def _get_xstar(self, lags: np.ndarray) -> tuple[sksparse.cholmod.Factor, np.ndarray, float]:
         """For a total A and S, solve for xstar using the cholesky factorization of A
@@ -232,11 +232,11 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         A = self._get_total_A(lags)
         S = self._get_total_S(P_diag)
 
-        Acho = self.Achofac.cholesky(A)
-        x_star = Acho.solve_A(S)
-        xAx = np.real(x_star.conjugate() @ A @ x_star) 
+        self.Acho.cholesky_inplace(A) #update the Cholesky factorization
+        x_star = self.Acho.solve_A(S)
+        xAx = np.real(x_star.conjugate() @ A @ x_star)
 
-        return Acho, x_star, xAx
+        return x_star, xAx
         
     def get_dual(self, lags: np.ndarray, get_grad: bool = False, get_hess: bool = False, penalty_vectors: list = []) -> tuple[float, np.ndarray, np.ndarray]:
         """Gets the dual value and the derivatives of the dual with respect to Lagrange multipliers.
@@ -266,7 +266,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         grad, hess = [], []
         grad_penalty, hess_penalty = [], []
 
-        Acho, xstar, dualval = self._get_xstar(lags)
+        xstar, dualval = self._get_xstar(lags)
         dualval += self.c0
 
         if get_hess:
@@ -285,7 +285,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
             grad = np.real(xstar.conj() @ (Fx + 2*self.Fs)) #get_hess implies get_grad also
             
             Ftot = Fx + self.Fs
-            hess = 2*np.real(Ftot.conj().T @ Acho.solve_A(Ftot))
+            hess = 2*np.real(Ftot.conj().T @ self.Acho.solve_A(Ftot))
                 
         elif get_grad: # This is grad_lambda (not grad_x); elif since get_hess automatically computes grad
             # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))). Second term: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
@@ -306,7 +306,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         dualval_penalty = 0.0 
         if len(penalty_vectors) > 0:
             penalty_matrix = np.column_stack(penalty_vectors)
-            A_inv_penalty = Acho.solve_A(penalty_matrix)
+            A_inv_penalty = self.Acho.solve_A(penalty_matrix)
             dualval_penalty += np.sum(np.real(A_inv_penalty.conj() * penalty_matrix)) # multiplies columns with columns, sums all at once
 
             if get_hess:
@@ -320,7 +320,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
                         Fv[:,k] = Ak @ A_inv_penalty[:,j]
                     
                     grad_penalty += np.real(-A_inv_penalty[:,j].conj().T @ Fv)
-                    hess_penalty += 2*np.real(Fv.conj().T @ Acho.solve_A(Fv))
+                    hess_penalty += 2*np.real(Fv.conj().T @ self.Acho.solve_A(Fv))
                     
             elif get_grad: 
                 grad_penalty = np.zeros(len(grad))
@@ -378,8 +378,8 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         """
         A = self._get_total_A(lags)
         try:
-            Acho = self.Achofac.cholesky(A)
-            tmp = Acho.L() # Have to access the factor for the decomposition to be actually done. 
+            tmp = self.Acho.cholesky(A)
+            tmp = tmp.L() # Have to access the factor for the decomposition to be actually done. 
             return True
         except sksparse.cholmod.CholmodNotPositiveDefiniteError:
             return False
@@ -411,7 +411,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
             raise ValueError(f"Unknown method '{method}' for solving the dual problem. Use newton or bfgs.")
         
         self.current_lags, self.current_dual, self.current_grad = optimizer.run(init_lags)
-        _, self.current_xstar, _ = self._get_xstar(self.current_lags)
+        self.current_xstar, _ = self._get_xstar(self.current_lags)
 
         return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
         
