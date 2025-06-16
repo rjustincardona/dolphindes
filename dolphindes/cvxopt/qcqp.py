@@ -85,16 +85,6 @@ class _SharedProjQCQP():
 
         # (Fs)_k = A_2^dagger P_k^dagger s1
         self.Fs = self.A2.conj().T @ (self.Pdiags.conj().T * self.s1).T
-
-    def __deepcopy__(self, memo):
-        # custom __deepcopy__ because Acho is not pickle-able
-        new_QCQP = SparseSharedProjQCQP.__new__(SparseSharedProjQCQP)
-        for name, value in self.__dict__.items():
-            if name != 'Acho':
-                setattr(new_QCQP, name, copy.deepcopy(value, memo))
-        
-        new_QCQP._initialize_Acho()  # Recompute the Cholesky factorization. If dense, will use self.current_lags. 
-        return new_QCQP
     
     def get_number_constraints(self) -> int:
         """Returns the number of constraints in the QCQP"""
@@ -421,6 +411,16 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
     def __repr__(self):
         return f"SparseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
 
+    def __deepcopy__(self, memo):
+        # custom __deepcopy__ because Acho is not pickle-able
+        new_QCQP = SparseSharedProjQCQP.__new__(SparseSharedProjQCQP)
+        for name, value in self.__dict__.items():
+            if name != 'Acho':
+                setattr(new_QCQP, name, copy.deepcopy(value, memo))
+        
+        new_QCQP._initialize_Acho()  # Recompute the Cholesky factorization. If dense, will use self.current_lags. 
+        return new_QCQP
+    
     def compute_precomputed_values(self):
         super().compute_precomputed_values()
         self._initialize_Acho()
