@@ -3,10 +3,11 @@ Dual Problem Interface
 
 """
 
-__all__ = ['SparseSharedProjQCQP'] 
+__all__ = ['SparseSharedProjQCQP', 'DenseSharedProjQCQP']
 
 import copy
-import numpy as np 
+import numpy as np
+import scipy.linalg as la
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import sksparse.cholmod 
@@ -712,4 +713,62 @@ class DenseSharedProjQCQP(_SharedProjQCQP):
     current_hess : np.ndarray
         The current hess_lambda of the dual solution, which is only updated when the dual problem is solved. 
     """
-    pass 
+    
+    def __init__(self, A0: np.ndarray, s0: np.ndarray, c0: float, A1: np.ndarray, 
+                 s1: np.ndarray, Pdiags: np.ndarray, 
+                 A2: np.ndarray = None, 
+                 verbose: float = 0):
+        
+        if A2 is None:
+            A2 = sp.eye_array(len(s0), format='csc')
+        
+        super().__init__(A0, s0, c0, A1, A2, s1, Pdiags, verbose)
+    
+    def _update_Acho(self, A):
+        """
+        Updates the Cholesky factorization to be that of the input matrix A.
+        Needs to be implemented by subclasses.
+        
+        Parameters
+        ----------
+        A : np.ndarray
+            New total A.
+        """
+        self.Acho = la.cho_factor(A)
+    
+    def _Acho_solve(self, b):
+        """
+        Computes A^{-1} b using Acho. 
+
+        Parameters
+        ----------
+        b : np.ndarray
+            Right-hand-side of linear system.
+
+        Returns
+        -------
+        A^{-1} b
+        """
+        return la.cho_solve(self.Acho, b)
+    
+    def is_dual_feasible(self, lags: np.ndarray) -> bool:
+        """
+        Checks if a set of Lagrange multipliers is dual feasible by attempting a Cholesky decomposition.
+        
+        Arguments
+        ---------
+        lags: np.ndarray
+            A 1-dimensional numpy array of Lagrange multipliers.
+
+        Returns
+        -------
+        bool
+            True if the total A matrix is positive semidefinite (dual feasible).
+        """
+        A = self._get_total_A(lags)
+        try:
+            la.cho_factor(A)
+            return True
+        except la.LinAlgError:
+            return False
+    
