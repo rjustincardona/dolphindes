@@ -55,14 +55,14 @@ class _SharedProjQCQP():
     current_hess : np.ndarray
         The current hess_lambda of the dual solution, which is only updated when the dual problem is solved. 
     """
-    def __init__(self, A0: np.ndarray | sp.csc_array, s0: np.ndarray, c0: float, A1: sp.csc_array, A2: sp.csc_array, 
+    def __init__(self, A0: np.ndarray | sp.csc_array, s0: np.ndarray, c0: float, A1: np.ndarray | sp.csc_array, A2: np.ndarray | sp.csc_array, 
                  s1: np.ndarray, Pdiags: np.ndarray, verbose: float = 0):
         self.A0 = A0
         self.s0 = s0
         self.s1 = s1
         self.c0 = c0
-        self.A1 = sp.csc_array(A1)
-        self.A2 = sp.csc_array(A2)
+        self.A1 = A1
+        self.A2 = A2
         self.verbose = verbose
         self.Pdiags = Pdiags
         self.Acho = None
