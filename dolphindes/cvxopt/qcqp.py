@@ -72,6 +72,18 @@ class _SharedProjQCQP():
         self.current_lags = None 
         self.current_xstar = None 
 
+    def compute_precomputed_values(self):
+        # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
+        self.precomputed_As = []
+        for i in range(self.Pdiags.shape[1]):
+            Ak = Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
+            self.precomputed_As.append(Ak)
+        
+        print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
+
+        # (Fs)_k = A_2^dagger P_k^dagger s1
+        self.Fs = self.A2.conj().T @ (self.Pdiags.conj().T * self.s1).T
+
     def __deepcopy__(self, memo):
         # custom __deepcopy__ because Acho is not pickle-able
         new_QCQP = SparseSharedProjQCQP.__new__(SparseSharedProjQCQP)
@@ -101,6 +113,14 @@ class _SharedProjQCQP():
         """
         return self.Pdiags @ lags
     
+    def _get_total_A(self, lags: np.ndarray) -> sp.csc_array:
+        """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given sum_j lag[j] P_j"""
+        return self.A0 + sum(lags[i] * self.precomputed_As[i] for i in range(len(lags)))
+    
+    def _get_total_S(self, Pdiag: np.ndarray) -> np.ndarray:
+        """Gets the total S vector for the QCQP = s0 + sum_j lag[j] P_j^dagger s1 given P = sum_j lag[j] P_j"""
+        return self.s0 + self.A2.T.conj() @ (Pdiag.conj() * self.s1)
+    
     def _update_Acho(self, A):
         """
         Updates the Cholesky factorization to be that of the input matrix A.
@@ -129,6 +149,23 @@ class _SharedProjQCQP():
         """
         pass
     
+    def is_dual_feasible(self, lags: np.ndarray) -> bool:
+        """
+        Checks if a set of Lagrange multipliers is dual feasible by attempting a Cholesky decomposition.
+        Needs to be implemented by subclasses.
+        
+        Arguments
+        ---------
+        lags: np.ndarray
+            A 1-dimensional numpy array of Lagrange multipliers.
+
+        Returns
+        -------
+        bool
+            True if the total A matrix is positive semidefinite (dual feasible).
+        """
+        pass
+        
     def find_feasible_lags(self, start: float = 0.1, limit: float = 1e8) -> np.ndarray:
         """
         Find a feasible point for the dual problem. This assumes that for large enough lags[1], A is PSD.
@@ -204,27 +241,8 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         return f"SparseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
 
     def compute_precomputed_values(self):
-        # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
-        self.precomputed_As = []
-        for i in range(self.Pdiags.shape[1]):
-            Ak = Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
-            self.precomputed_As.append(Ak)
-        
-        print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
-
-        # (Fs)_k = A_2^dagger P_k^dagger s1
-        self.Fs = self.A2.conj().T @ (self.Pdiags.conj().T * self.s1).T
-
+        super().compute_precomputed_values()
         self._initialize_Acho()
-
-
-    def _get_total_A(self, lags: np.ndarray) -> sp.csc_array:
-        """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given sum_j lag[j] P_j"""
-        return self.A0 + sum(lags[i] * self.precomputed_As[i] for i in range(len(lags)))
-    
-    def _get_total_S(self, Pdiag: np.ndarray) -> np.ndarray:
-        """Gets the total S vector for the QCQP = s0 + sum_j lag[j] P_j^dagger s1 given P = sum_j lag[j] P_j"""
-        return self.s0 + self.A2.T.conj() @ (Pdiag.conj() * self.s1)
 
     def _initialize_Acho(self) -> sksparse.cholmod.Factor:
         """
@@ -263,6 +281,29 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         """
         return self.Acho.solve_A(b)
 
+    def is_dual_feasible(self, lags: np.ndarray) -> bool:
+        """
+        Checks if a set of Lagrange multipliers is dual feasible by attempting a Cholesky decomposition.
+        This is efficient because the sparsity pattern of the total A matrix is known and does not change.
+
+        Arguments
+        ---------
+        lags: np.ndarray
+            A 1-dimensional numpy array of Lagrange multipliers.
+
+        Returns
+        -------
+        bool
+            True if the total A matrix is positive semidefinite (dual feasible).
+        """
+        A = self._get_total_A(lags)
+        try:
+            tmp = self.Acho.cholesky(A)
+            tmp = tmp.L() # Have to access the factor for the decomposition to be actually done. 
+            return True
+        except sksparse.cholmod.CholmodNotPositiveDefiniteError:
+            return False
+    
     def _get_xstar(self, lags: np.ndarray) -> tuple[sksparse.cholmod.Factor, np.ndarray, float]:
         """For a total A and S, solve for xstar using the cholesky factorization of A
         
@@ -414,29 +455,6 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         eigw, eigv = spla.eigsh(A, k=1, sigma=0.0, which='LM', return_eigenvectors=True)
         aux = eigw
         return eigv[:,0], aux
-    
-    def is_dual_feasible(self, lags: np.ndarray) -> bool:
-        """
-        Checks if a set of Lagrange multipliers is dual feasible by attempting a Cholesky decomposition.
-        This is efficient because the sparsity pattern of the total A matrix is known and does not change.
-
-        Arguments
-        ---------
-        lags: np.ndarray
-            A 1-dimensional numpy array of Lagrange multipliers.
-
-        Returns
-        -------
-        bool
-            True if the total A matrix is positive semidefinite (dual feasible).
-        """
-        A = self._get_total_A(lags)
-        try:
-            tmp = self.Acho.cholesky(A)
-            tmp = tmp.L() # Have to access the factor for the decomposition to be actually done. 
-            return True
-        except sksparse.cholmod.CholmodNotPositiveDefiniteError:
-            return False
 
     def solve_current_dual_problem(self, method: str, opt_params: dict = None, init_lags: np.ndarray = None):
         """
