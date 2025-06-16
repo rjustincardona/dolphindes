@@ -113,7 +113,7 @@ class _SharedProjQCQP():
         """
         return self.Pdiags @ lags
     
-    def _get_total_A(self, lags: np.ndarray) -> sp.csc_array:
+    def _get_total_A(self, lags: np.ndarray) -> sp.csc_array | np.ndarray:
         """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given sum_j lag[j] P_j"""
         return self.A0 + sum(lags[i] * self.precomputed_As[i] for i in range(len(lags)))
     
@@ -212,119 +212,6 @@ class _SharedProjQCQP():
         aux = eigw
         return eigv[:,0], aux
 
-    
-class SparseSharedProjQCQP(_SharedProjQCQP):
-    """Represents a QCQP with a single type of constraint over projection regions.
-
-    Problem is 
-    max_x -x^dagger A0 x + 2 Re (x^dagger s0) + c0
-    s.t.  Re(-x^dagger A1 P_j A_2 x) + 2 Re (x^dagger A_2^dagger P_j^dagger s1) = 0
-
-    for a list of projection matrices P_j. Representas 
-
-    Attributes
-    ----------
-    A0 : scipy.sparse.csc_array
-        The matrix A0 in the QCQP.
-    s0 : np.ndarray
-        The vector s in the QCQP.
-    c0 : float
-        The constant c in the QCQP.
-    A1 : scipy.sparse.csc_array
-        The matrix A1 in the QCQP.
-    A2 : scipy.sparse.csc_array
-        The matrix A2 in the QCQP.
-    s1 : np.ndarray
-        The vector s1 in the QCQP.
-    Pdiags : np.ndarray
-        The diagonal elements of the projection matrices P_j, as columns of a matrix Pdiags
-        The second column j should always be one such that A0 + lambda A1 P_j is positive semidefinite for sufficiently large constant lambda.
-    verbose : float
-        The verbosity level for debugging and logging.
-    Acho : sksparse.cholmod.Factor
-        The Cholesky factorization of the total A matrix, which is updated when needed.
-    current_dual : float
-        The current dual solution, which is only updated when the dual problem is solved.
-    current_lags : np.ndarray
-        The current Lagrangian multipliers, which is only updated when the dual problem is solved.
-    current_grad : np.ndarray
-        The current grad_lambda of the dual solution, which is only updated when the dual problem is solved.
-    current_hess : np.ndarray
-        The current hess_lambda of the dual solution, which is only updated when the dual problem is solved. 
-    """
-    def __init__(self, A0: sp.csc_array, s0: np.ndarray, c0: float, A1: sp.csc_array, A2: sp.csc_array, 
-                 s1: np.ndarray, Pdiags: np.ndarray, verbose: float = 0):
-        super().__init__(A0, s0, c0, A1, A2, s1, Pdiags, verbose)
-        self.A0 = sp.csc_array(A0) # Convert in case the user passes a dense array or other format 
-        self.compute_precomputed_values()  # Precompute values for efficiency
-        
-    def __repr__(self):
-        return f"SparseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
-
-    def compute_precomputed_values(self):
-        super().compute_precomputed_values()
-        self._initialize_Acho()
-
-    def _initialize_Acho(self) -> sksparse.cholmod.Factor:
-        """
-        Analyzes the non-zero structure of A and initializes self.Acho with the 
-        optimal fill-reducing permutation for A using sksparse.cholmod
-        """
-        random_lags = np.random.rand(self.Pdiags.shape[1])
-        # P = self._add_projectors(random_lags)
-        A = self._get_total_A(random_lags)
-        if self.verbose > 1: print(f"analyzing A of format and shape {type(A)}, {A.shape} and # of nonzero elements '{A.count_nonzero()}")
-        self.Acho = sksparse.cholmod.analyze(A)
-
-    def _update_Acho(self, A):
-        """
-        updates the Cholesky factorization to be that of the input matrix A.
-
-        Parameters
-        ----------
-        A : sp.csc_array
-            New total A.
-        """
-        self.Acho.cholesky_inplace(A)
-    
-    def _Acho_solve(self, b):
-        """
-        computes A^{-1} b using Acho
-
-        Parameters
-        ----------
-        b : np.ndarray
-            Right-hand-side of linear system.
-
-        Returns
-        -------
-        A^{-1} b
-        """
-        return self.Acho.solve_A(b)
-
-    def is_dual_feasible(self, lags: np.ndarray) -> bool:
-        """
-        Checks if a set of Lagrange multipliers is dual feasible by attempting a Cholesky decomposition.
-        This is efficient because the sparsity pattern of the total A matrix is known and does not change.
-
-        Arguments
-        ---------
-        lags: np.ndarray
-            A 1-dimensional numpy array of Lagrange multipliers.
-
-        Returns
-        -------
-        bool
-            True if the total A matrix is positive semidefinite (dual feasible).
-        """
-        A = self._get_total_A(lags)
-        try:
-            tmp = self.Acho.cholesky(A)
-            tmp = tmp.L() # Have to access the factor for the decomposition to be actually done. 
-            return True
-        except sksparse.cholmod.CholmodNotPositiveDefiniteError:
-            return False
-    
     def _get_xstar(self, lags: np.ndarray) -> tuple[sksparse.cholmod.Factor, np.ndarray, float]:
         """For a total A and S, solve for xstar using the cholesky factorization of A
         
@@ -353,7 +240,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         xAx = np.real(x_star.conjugate() @ A @ x_star)
 
         return x_star, xAx
-        
+    
     def get_dual(self, lags: np.ndarray, get_grad: bool = False, get_hess: bool = False, penalty_vectors: list = []) -> tuple[float, np.ndarray, np.ndarray]:
         """Gets the dual value and the derivatives of the dual with respect to Lagrange multipliers.
 
@@ -487,6 +374,119 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         self.current_xstar, _ = self._get_xstar(self.current_lags)
 
         return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
+        
+    
+class SparseSharedProjQCQP(_SharedProjQCQP):
+    """Represents a QCQP with a single type of constraint over projection regions.
+
+    Problem is 
+    max_x -x^dagger A0 x + 2 Re (x^dagger s0) + c0
+    s.t.  Re(-x^dagger A1 P_j A_2 x) + 2 Re (x^dagger A_2^dagger P_j^dagger s1) = 0
+
+    for a list of projection matrices P_j. Representas 
+
+    Attributes
+    ----------
+    A0 : scipy.sparse.csc_array
+        The matrix A0 in the QCQP.
+    s0 : np.ndarray
+        The vector s in the QCQP.
+    c0 : float
+        The constant c in the QCQP.
+    A1 : scipy.sparse.csc_array
+        The matrix A1 in the QCQP.
+    A2 : scipy.sparse.csc_array
+        The matrix A2 in the QCQP.
+    s1 : np.ndarray
+        The vector s1 in the QCQP.
+    Pdiags : np.ndarray
+        The diagonal elements of the projection matrices P_j, as columns of a matrix Pdiags
+        The second column j should always be one such that A0 + lambda A1 P_j is positive semidefinite for sufficiently large constant lambda.
+    verbose : float
+        The verbosity level for debugging and logging.
+    Acho : sksparse.cholmod.Factor
+        The Cholesky factorization of the total A matrix, which is updated when needed.
+    current_dual : float
+        The current dual solution, which is only updated when the dual problem is solved.
+    current_lags : np.ndarray
+        The current Lagrangian multipliers, which is only updated when the dual problem is solved.
+    current_grad : np.ndarray
+        The current grad_lambda of the dual solution, which is only updated when the dual problem is solved.
+    current_hess : np.ndarray
+        The current hess_lambda of the dual solution, which is only updated when the dual problem is solved. 
+    """
+    def __init__(self, A0: sp.csc_array, s0: np.ndarray, c0: float, A1: sp.csc_array, A2: sp.csc_array, 
+                 s1: np.ndarray, Pdiags: np.ndarray, verbose: float = 0):
+        super().__init__(A0, s0, c0, A1, A2, s1, Pdiags, verbose)
+        self.A0 = sp.csc_array(A0) # Convert in case the user passes a dense array or other format 
+        self.compute_precomputed_values()  # Precompute values for efficiency
+        
+    def __repr__(self):
+        return f"SparseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
+
+    def compute_precomputed_values(self):
+        super().compute_precomputed_values()
+        self._initialize_Acho()
+
+    def _initialize_Acho(self) -> sksparse.cholmod.Factor:
+        """
+        Analyzes the non-zero structure of A and initializes self.Acho with the 
+        optimal fill-reducing permutation for A using sksparse.cholmod
+        """
+        random_lags = np.random.rand(self.Pdiags.shape[1])
+        # P = self._add_projectors(random_lags)
+        A = self._get_total_A(random_lags)
+        if self.verbose > 1: print(f"analyzing A of format and shape {type(A)}, {A.shape} and # of nonzero elements '{A.count_nonzero()}")
+        self.Acho = sksparse.cholmod.analyze(A)
+
+    def _update_Acho(self, A):
+        """
+        updates the Cholesky factorization to be that of the input matrix A.
+
+        Parameters
+        ----------
+        A : sp.csc_array
+            New total A.
+        """
+        self.Acho.cholesky_inplace(A)
+    
+    def _Acho_solve(self, b):
+        """
+        computes A^{-1} b using Acho
+
+        Parameters
+        ----------
+        b : np.ndarray
+            Right-hand-side of linear system.
+
+        Returns
+        -------
+        A^{-1} b
+        """
+        return self.Acho.solve_A(b)
+
+    def is_dual_feasible(self, lags: np.ndarray) -> bool:
+        """
+        Checks if a set of Lagrange multipliers is dual feasible by attempting a Cholesky decomposition.
+        This is efficient because the sparsity pattern of the total A matrix is known and does not change.
+
+        Arguments
+        ---------
+        lags: np.ndarray
+            A 1-dimensional numpy array of Lagrange multipliers.
+
+        Returns
+        -------
+        bool
+            True if the total A matrix is positive semidefinite (dual feasible).
+        """
+        A = self._get_total_A(lags)
+        try:
+            tmp = self.Acho.cholesky(A)
+            tmp = tmp.L() # Have to access the factor for the decomposition to be actually done. 
+            return True
+        except sksparse.cholmod.CholmodNotPositiveDefiniteError:
+            return False
         
     
     def refine_projectors(self) -> Tuple[np.ndarray, np.ndarray]:
