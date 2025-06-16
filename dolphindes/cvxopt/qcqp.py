@@ -419,6 +419,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
                 setattr(new_QCQP, name, copy.deepcopy(value, memo))
         
         new_QCQP._initialize_Acho()  # Recompute the Cholesky factorization. If dense, will use self.current_lags. 
+        # TODO: update Acho with current_lags if applicable
         return new_QCQP
     
     def compute_precomputed_values(self):
@@ -484,8 +485,8 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
             return True
         except sksparse.cholmod.CholmodNotPositiveDefiniteError:
             return False
-        
-    
+
+
     def refine_projectors(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         Doubles the number of projectors, refining the number of constraints to smaller regions. Multipliers will be selected so that dual value remains constant and can be further optimized from existing point. 
@@ -670,13 +671,14 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
             ) from e
             
         return solve_sparse_qcqp_primal_with_gurobi(self, gurobi_params)
-    
-class DenseSharedProjQCQP():
+
+
+class DenseSharedProjQCQP(_SharedProjQCQP):
     """Represents a QCQP with a single type of constraint over projection regions.
 
     Problem is 
-    max_x x^dagger A0 x + 2 Re (x^dagger s0) + c
-    s.t.  Re(x^dagger A1 P_j x + 2 Re (x^dagger P_j^dagger s1) + c) = 0
+    max_x -x^dagger A0 x + 2 Re (x^dagger s0) + c0
+    s.t.  Re(-x^dagger A1 P_j A_2 x) + 2 Re (x^dagger A_2^dagger P_j^dagger s1) = 0
 
     for a list of projection matrices P_j. 
 
@@ -686,11 +688,28 @@ class DenseSharedProjQCQP():
         The matrix A0 in the QCQP.
     s0 : np.ndarray
         The vector s in the QCQP.
-    c : float
+    c0 : float
         The constant c in the QCQP.
     A1 : np.ndarray
         The matrix A1 in the QCQP.
-    projections_diags : np.ndarray
-        The diagonal elements of the projection matrices P_j. The first one should always be one such that A0 + lambda A1 P_0 is positive semidefinite for sufficiently large constant lambda. 
+    A2 : np.ndarray or sp.csc_array, default is sparse identity
+        The matrix A2 in the QCQP.
+    s1 : np.ndarray
+        The vector s1 in the QCQP.
+    Pdiags : np.ndarray
+        The diagonal elements of the projection matrices P_j, as columns of a matrix Pdiags
+        The second column j should always be one such that A0 + lambda A1 P_j is positive semidefinite for sufficiently large constant lambda.
+    verbose : float
+        The verbosity level for debugging and logging.
+    Acho : sksparse.cholmod.Factor
+        The Cholesky factorization of the total A matrix, which is updated when needed.
+    current_dual : float
+        The current dual solution, which is only updated when the dual problem is solved.
+    current_lags : np.ndarray
+        The current Lagrangian multipliers, which is only updated when the dual problem is solved.
+    current_grad : np.ndarray
+        The current grad_lambda of the dual solution, which is only updated when the dual problem is solved.
+    current_hess : np.ndarray
+        The current hess_lambda of the dual solution, which is only updated when the dual problem is solved. 
     """
     pass 
