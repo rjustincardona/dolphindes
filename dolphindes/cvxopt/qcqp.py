@@ -66,11 +66,13 @@ class _SharedProjQCQP():
         self.verbose = verbose
         self.Pdiags = Pdiags
         self.Acho = None
-        self.current_dual = None 
-        self.current_grad = None 
+        self.current_dual = None
+        self.current_grad = None
         self.current_hess = None
-        self.current_lags = None 
-        self.current_xstar = None 
+        self.current_lags = None
+        self.current_xstar = None
+        
+        self.compute_precomputed_values()
 
     def compute_precomputed_values(self):
         # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
@@ -415,12 +417,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
     current_hess : np.ndarray
         The current hess_lambda of the dual solution, which is only updated when the dual problem is solved. 
     """
-    def __init__(self, A0: sp.csc_array, s0: np.ndarray, c0: float, A1: sp.csc_array, A2: sp.csc_array, 
-                 s1: np.ndarray, Pdiags: np.ndarray, verbose: float = 0):
-        super().__init__(A0, s0, c0, A1, A2, s1, Pdiags, verbose)
-        self.A0 = sp.csc_array(A0) # Convert in case the user passes a dense array or other format 
-        self.compute_precomputed_values()  # Precompute values for efficiency
-        
+
     def __repr__(self):
         return f"SparseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
 
