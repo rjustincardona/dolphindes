@@ -79,7 +79,7 @@ class _SharedProjQCQP():
             if name != 'Achofac':
                 setattr(new_QCQP, name, copy.deepcopy(value, memo))
         
-        new_QCQP._update_chofac()  # Recompute the Cholesky factorization. If dense, will use self.current_lags. 
+        new_QCQP._initialize_chofac()  # Recompute the Cholesky factorization. If dense, will use self.current_lags. 
         return new_QCQP
     
     def get_number_constraints(self) -> int:
@@ -187,7 +187,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         # (Fs)_k = A_2^dagger P_k^dagger s1
         self.Fs = self.A2.conj().T @ (self.Pdiags.conj().T * self.s1).T
 
-        self._update_chofac()
+        self._initialize_chofac()
 
 
     def _get_total_A(self, lags: np.ndarray) -> sp.csc_array:
@@ -198,20 +198,16 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         """Gets the total S vector for the QCQP = s0 + sum_j lag[j] P_j^dagger s1 given P = sum_j lag[j] P_j"""
         return self.s0 + self.A2.T.conj() @ (Pdiag.conj() * self.s1)
 
-    def _update_chofac(self) -> sksparse.cholmod.Factor:
-        """Updates the cholesky factorization of the total A
-        
-        Returns
-        -------
-        sksparse.cholmod.Cholesky
-            The updated cholesky factorization of the total A matrix.
+    def _initialize_chofac(self) -> sksparse.cholmod.Factor:
+        """
+        Analyzes the non-zero structure of A and initializes self.Acho with the 
+        optimal fill-reducing permutation for A using sksparse.cholmod
         """
         random_lags = np.random.rand(self.Pdiags.shape[1])
         # P = self._add_projectors(random_lags)
         A = self._get_total_A(random_lags)
         if self.verbose > 1: print(f"analyzing A of format and shape {type(A)}, {A.shape} and # of nonzero elements '{A.count_nonzero()}")
         self.Achofac = sksparse.cholmod.analyze(A)
-        return self.Achofac
 
     def _get_xstar(self, lags: np.ndarray) -> tuple[sksparse.cholmod.Factor, np.ndarray, float]:
         """For a total A and S, solve for xstar using the cholesky factorization of A
