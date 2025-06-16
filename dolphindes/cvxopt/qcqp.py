@@ -192,6 +192,27 @@ class _SharedProjQCQP():
         if self.verbose > 0: print(f"Found feasible point for dual problem: {init_lags} with dualvalue {self.get_dual(init_lags)[0]}")
         return init_lags
     
+    def _get_PSD_penalty(self, lags) -> np.ndarray:
+        """
+        Returns the eigenvector for the smallest eigenvalue. This vector can be used to calculate the PSD boundary of the dual function.
+        In theory, other PSD penalties exist, such as the determinant. We found that this works well for photonic limits. 
+
+        Parameters
+        ----------
+        lags : np.ndarray
+            Lagrange multipliers from which A will be calculated
+
+        Returns
+        -------
+        eigv : np.ndarray
+            Eigenvector corresponding to the lowest eigenvalue of A(lags)
+        """
+        A = self._get_total_A(lags)
+        eigw, eigv = spla.eigsh(A, k=1, sigma=0.0, which='LM', return_eigenvectors=True)
+        aux = eigw
+        return eigv[:,0], aux
+
+    
 class SparseSharedProjQCQP(_SharedProjQCQP):
     """Represents a QCQP with a single type of constraint over projection regions.
 
@@ -435,26 +456,6 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
             return dualval + dualval_penalty, grad + grad_penalty, hess + hess_penalty, dual_aux
         else:
             return dualval, grad, hess, dual_aux
-
-    def _get_PSD_penalty(self, lags) -> np.ndarray:
-        """
-        Returns the eigenvector for the smallest eigenvalue. This vector can be used to calculate the PSD boundary of the dual function.
-        In theory, other PSD penalties exist, such as the determinant. We found that this works well for photonic limits. 
-
-        Parameters
-        ----------
-        lags : np.ndarray
-            Lagrange multipliers from which A will be calculated
-
-        Returns
-        -------
-        eigv : np.ndarray
-            Eigenvector corresponding to the lowest eigenvalue of A(lags)
-        """
-        A = self._get_total_A(lags)
-        eigw, eigv = spla.eigsh(A, k=1, sigma=0.0, which='LM', return_eigenvectors=True)
-        aux = eigw
-        return eigv[:,0], aux
 
     def solve_current_dual_problem(self, method: str, opt_params: dict = None, init_lags: np.ndarray = None):
         """
