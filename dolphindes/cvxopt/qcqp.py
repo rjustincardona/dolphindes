@@ -15,8 +15,9 @@ from .optimization import BFGS, Alt_Newton_GD
 from dolphindes.util import Sym
 from collections import namedtuple
 from typing import Optional, Dict, Any, Tuple # For type hinting the new method
+from abc import ABC, abstractmethod
 
-class _SharedProjQCQP():
+class _SharedProjQCQP(ABC):
     """Represents a QCQP with a single type of constraint over projection regions. 
     Parent class, should not be instantiated directly as it is missing key functionality. 
 
@@ -28,15 +29,15 @@ class _SharedProjQCQP():
 
     Attributes
     ----------
-    A0 : LinearOperator
+    A0 : scipy.sparse.csc_array | np.ndarray
         The matrix A0 in the QCQP. 
     s0 : np.ndarray
         The vector s in the QCQP.
     c0 : float
         The constant c in the QCQP.
-    A1 : scipy.sparse.csc_array
+    A1 : scipy.sparse.csc_array | np.ndarray
         The matrix A1 in the QCQP.
-    A2 : scipy.sparse.csc_array
+    A2 : scipy.sparse.csc_array | np.ndarray
         The matrix A2 in the QCQP.
     s1 : np.ndarray
         The vector s1 in the QCQP.
@@ -114,6 +115,7 @@ class _SharedProjQCQP():
         """Gets the total S vector for the QCQP = s0 + sum_j lag[j] P_j^dagger s1 given P = sum_j lag[j] P_j"""
         return self.s0 + self.A2.T.conj() @ (Pdiag.conj() * self.s1)
     
+    @abstractmethod
     def _update_Acho(self, A):
         """
         Updates the Cholesky factorization to be that of the input matrix A.
@@ -126,6 +128,7 @@ class _SharedProjQCQP():
         """
         pass
     
+    @abstractmethod
     def _Acho_solve(self, b):
         """
         Computes A^{-1} b using Acho. 
@@ -142,6 +145,7 @@ class _SharedProjQCQP():
         """
         pass
     
+    @abstractmethod
     def is_dual_feasible(self, lags: np.ndarray) -> bool:
         """
         Checks if a set of Lagrange multipliers is dual feasible by attempting a Cholesky decomposition.
