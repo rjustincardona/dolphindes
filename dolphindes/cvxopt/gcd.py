@@ -9,7 +9,7 @@ import numpy as np
 import scipy.linalg as la
 import scipy.sparse as sp
 from .qcqp import SparseSharedProjQCQP
-from dolphindes.util import Sym
+from dolphindes.util import Sym, CRdot
 
 
 def merge_lead_constraints(QCQP: SparseSharedProjQCQP, merged_num: int = 2):
@@ -62,25 +62,6 @@ def merge_lead_constraints(QCQP: SparseSharedProjQCQP, merged_num: int = 2):
     QCQP.current_lags = new_lags
     QCQP.current_grad = QCQP.current_hess = None # in principle can merge dual derivatives but leave it undone for now
 
-
-def CRdot(v1: np.ndarray, v2: np.ndarray):
-    """
-    Computes the inner product of two complex vectors over a real field.
-    In other words, the vectors have complex numbers but linear combination coefficients have to be real.
-    This is the vector space for the complex QCQP constraints since Lagrangian multipliers are real.
-    
-    Parameters
-    ----------
-    v1 : np.ndarray
-        vector1
-    v2 : np.ndarray
-        vector2
-
-    Returns
-    -------
-    The inner product
-    """
-    return np.real(np.vdot(v1,v2))
 
 def add_constraints(QCQP: SparseSharedProjQCQP, added_Pdiag_list: list, orthonormalize: bool=True):
     """
