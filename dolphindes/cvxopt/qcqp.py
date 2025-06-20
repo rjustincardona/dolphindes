@@ -813,7 +813,7 @@ def merge_lead_constraints(QCQP: _SharedProjQCQP, merged_num: int = 2):
     
     Parameters
     ----------
-    QCQP : SparseSharedProjQCQP
+    QCQP : _SharedProjQCQP
         QCQP for which we merge the leading constraints.
     merged_num : int (optional, default 2)
         Number of leading constraints that we are merging together; should be at least 2.
@@ -862,7 +862,7 @@ def add_constraints(QCQP: _SharedProjQCQP, added_Pdiag_list: list, orthonormaliz
     
     Parameters
     ----------
-    QCQP : SparseSharedProjQCQP
+    QCQP : _SharedProjQCQP
         QCQP for which the new constraints are added in.
     added_Pdiag_list : list
         List of 1d numpy arrays that are the new constraints to be added in
@@ -917,7 +917,7 @@ def run_gcd(QCQP: _SharedProjQCQP,
     TODO: formalize optimization and convergence parameters.
     Parameters
     ----------
-    QCQP : SparseSharedProjQCQP
+    QCQP : _SharedProjQCQP
         The SharedProjQCQP for which we compute and refine dual bounds.
     max_cstrt_num : int, optional
         The maximum constraint number for QCQP. The default is 10.
