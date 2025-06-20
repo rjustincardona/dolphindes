@@ -179,6 +179,9 @@ class _SharedProjQCQP(ABC):
         init_lags : np.ndarray
             A set of Lagrange multipliers such that A is PSD.
         """
+        if (not self.current_lags is None) and self.is_dual_feasible(self.current_lags):
+            return self.current_lags
+        
         init_lags = np.random.random(self.Pdiags.shape[1]) * 1e-6  # Start with small positive lags
         init_lags[1] = start
         while self.is_dual_feasible(init_lags) is False:
