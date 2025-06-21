@@ -931,7 +931,15 @@ def run_gcd(QCQP: _SharedProjQCQP,
         The maximum constraint number for QCQP. The default is 10.
     orthonormalize : bool, optional
         Whether or not to orthonormalize the constraint projectors. The default is True.
+    opt_params: dictionary, optional
+        The opt_params for the internal _Optimizer run at every GCD iteration. 
     """
+    # since GCD is constantly changing the constraints, no need for many fake source iterations
+    OPT_PARAMS_DEFAULTS = {'max_restart':1}
+    if opt_params is None:
+        opt_params = {}
+    opt_params = {**OPT_PARAMS_DEFAULTS, **opt_params}
+    
     # get to feasible point
     QCQP.current_lags = QCQP.find_feasible_lags()
     if orthonormalize:
