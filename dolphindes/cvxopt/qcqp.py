@@ -353,16 +353,20 @@ class _SharedProjQCQP(ABC):
         method : str
             The method to use for solving the dual problem. 'newton' or 'bfgs'
         """
-        optfunc = self.get_dual
-        feasibility_func = self.is_dual_feasible
-        penalty_vector_func = self._get_PSD_penalty
-        is_convex = True 
+        is_convex = True
+        
+        OPT_PARAMS_DEFAULTS = {'opttol': 1e-2, 'gradConverge': False, 'min_inner_iter': 5, 'max_restart': np.inf, 'penalty_ratio': 1e-2, 'penalty_reduction': 0.1, 'break_iter_period': 20, 'verbose': self.verbose-1, 'penalty_vector_list': []}
         if opt_params is None:
-            opt_params = {'opttol': 1e-2, 'gradConverge': False, 'min_inner_iter': 5, 'max_restart': np.inf, 'penalty_ratio': 1e-2, 'penalty_reduction': 0.1, 'break_iter_period': 20, 'verbose': self.verbose-1, 'penalty_vector_list': []}
+            opt_params = {}
+        opt_params = {**OPT_PARAMS_DEFAULTS, **opt_params} # override defaults with user specifications
 
         if init_lags is None:
             init_lags = self.find_feasible_lags()
-
+        
+        optfunc = self.get_dual
+        feasibility_func = self.is_dual_feasible
+        penalty_vector_func = self._get_PSD_penalty
+        
         if method == 'newton':
             optimizer = Alt_Newton_GD(optfunc, feasibility_func, penalty_vector_func, is_convex, opt_params)
         elif method == 'bfgs':
@@ -391,13 +395,14 @@ class _SharedProjQCQP(ABC):
     
     def run_gcd(self, 
                 max_cstrt_num: int = 10, orthonormalize: bool=True,
-                max_gcd_iter_num=50, gcd_iter_period=5, gcd_tol=1e-2):
+                opt_params=None, max_gcd_iter_num=50, gcd_iter_period=5, gcd_tol=1e-2):
        """
        run general constraint descent to approach tightest dual bound for this QCQP.
        See module-level run_gcd() for details.
        """
        run_gcd(self, 
                max_cstrt_num=max_cstrt_num, orthonormalize=orthonormalize,
+               opt_params=opt_params, 
                max_gcd_iter_num=max_gcd_iter_num, gcd_iter_period=gcd_iter_period, gcd_tol=gcd_tol)
 
     
@@ -914,7 +919,7 @@ def add_constraints(QCQP: _SharedProjQCQP, added_Pdiag_list: list, orthonormaliz
 
 def run_gcd(QCQP: _SharedProjQCQP, 
             max_cstrt_num: int = 10, orthonormalize: bool=True,
-            max_gcd_iter_num=50, gcd_iter_period=5, gcd_tol=1e-2):
+            opt_params=None, max_gcd_iter_num=50, gcd_iter_period=5, gcd_tol=1e-2):
     """
     Perform generalized constraint descent to gradually refine dual bound on QCQP.
     TODO: formalize optimization and convergence parameters.
@@ -948,7 +953,7 @@ def run_gcd(QCQP: _SharedProjQCQP,
         gcd_iter_num += 1
         # solve current dual problem
         # TODO: add QCQP convergence params
-        QCQP.solve_current_dual_problem('newton', init_lags=QCQP.current_lags)
+        QCQP.solve_current_dual_problem('newton', init_lags=QCQP.current_lags, opt_params=opt_params)
         print(f'At GCD iteration #{gcd_iter_num}, best dual bound found is {QCQP.current_dual}.')
         
         ## termination conditions
