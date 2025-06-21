@@ -985,10 +985,8 @@ def run_gcd(QCQP: _SharedProjQCQP,
         
         ## add new constraints
         QCQP.add_constraints([maxViol_Pdiag, minAeig_Pdiag])
-        cstrt_num += 2
         # informally checked that new constraints are added in orthonormal fashion
     
         ## merge old constraints if necessary
-        if cstrt_num > max_cstrt_num:
-            QCQP.merge_lead_constraints(merged_num = cstrt_num-max_cstrt_num+1)
-            cstrt_num = max_cstrt_num
+        if QCQP.Pdiags.shape[1] > max_cstrt_num:
+            QCQP.merge_lead_constraints(merged_num = QCQP.Pdiags.shape[1]-max_cstrt_num+1)
