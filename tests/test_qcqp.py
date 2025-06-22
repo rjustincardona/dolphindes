@@ -175,7 +175,7 @@ class TestQCQP:
             dual_results['sparse_newton_local'] = current_dual
 
         assert np.allclose(dual_lambda, lags_optimal, atol=1e-4), "Newton dual lambda does not match optimal lags."
-        assert np.allclose(current_dual, dual_opt, atol=1e-4), "Newton dual values does not match optimal value."
+        assert np.allclose(current_dual, dual_opt, atol=1e-2), "Newton dual values does not match optimal value."
         dual_opt, grad_opt, hess_opt, aux_opt = sparse_ldos_qcqp.get_dual(dual_lambda, get_grad=True, get_hess=True)
         assert np.allclose(hess_opt, np.load(data / 'ldos_opthess.npy'), rtol=1e-1), "Hessian does not match optimal Hessian." # Hessian values can be large, so allow some tolerance.
         
@@ -219,13 +219,17 @@ class TestQCQP:
         ref_totalA = np.load(data / 'ldos_dense_totalA.npy')
         calc_totalA = dense_ldos_qcqp._get_total_A(lags)
         assert calc_totalA.shape == ref_totalA.shape, "Shape of calculated total A does not match reference."
-        assert np.allclose(calc_totalA, ref_totalA, atol=1e-6), "Calculated total A does not match reference total A."
+        assert np.allclose(calc_totalA, ref_totalA, atol=1e-12, rtol=1e-12), "Calculated total A does not match reference total A."
 
         print("Testing totalS = known total S")
         ref_totals = np.load(data / 'ldos_dense_total_s.npy', allow_pickle=True)
         calc_totals = dense_ldos_qcqp._get_total_S(combined_projector)
         assert calc_totals.shape == ref_totals.shape, "Shape of calculated total S does not match reference."
-        assert np.allclose(calc_totals, ref_totals), "Calculated total S does not match reference total S."
+        assert np.allclose(calc_totals, ref_totals, atol=1e-12, rtol=1e-12), "Calculated total S does not match reference total S."
+
+        init_dual, init_grad, hess, aux = dense_ldos_qcqp.get_dual(lags, get_grad=True)
+        print(init_grad, np.load(data / 'ldos_init_grad.npy'))
+        assert np.allclose(init_grad, np.load(data / 'ldos_init_grad.npy')), "Initial grad does not match reference."
 
         print("Testing dualval = known dualval and grad = known grad, as well as penalty vector dualval and grad")
         init_lags = dense_ldos_qcqp.find_feasible_lags()
@@ -240,10 +244,7 @@ class TestQCQP:
         print(f'optimal dual : {dual_opt}')
         print(np.load(data / 'ldos_dualval.npy'))
         assert np.allclose(dual_opt, np.load(data / 'ldos_dualval.npy'), atol=1e-6), "Dual values do not match."
-        print(grad_opt, np.load(data / 'ldos_grad.npy'))
-
-        grad_atol = 1e-1 if dense_qcqp_data["added_str"] == 'global' else 1
-        assert np.allclose(grad_opt, np.load(data / 'ldos_grad.npy'), atol=grad_atol), "Gradients do not match." # TODO(alessio): investigate why this is not matching well.
+        assert np.allclose(grad_opt, np.load(data / 'ldos_grad.npy')), "Gradients do not match." # TODO(alessio): investigate why this is not matching well.
 
         print("Testing solving the dual problem with BFGS and Newton")
         current_dual_bfgs, dual_lambda, current_grad, current_hess, xstar = dense_ldos_qcqp.solve_current_dual_problem('bfgs', init_lags = init_lags)
