@@ -26,7 +26,7 @@ To run the dolphindes tests, simply run
 pytest
 ```
 
-Optionally, provide the -s flag to print the output of the tests. 
+Optionally, provide the -s flag to print the output of the tests. You will need to have `pytest` and `pytest-dependency` installed in your environment. 
 
 ## Citations
 

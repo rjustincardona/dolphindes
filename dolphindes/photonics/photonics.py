@@ -8,7 +8,7 @@ __all__ = []
 
 import numpy as np
 import scipy.sparse as sp
-from dolphindes.cvxopt import SparseSharedProjQCQP
+from dolphindes.cvxopt import SparseSharedProjQCQP, DenseSharedProjQCQP
 from dolphindes.maxwell import TM_FDFD
 from dolphindes.util import check_attributes
 from typing import Tuple 
@@ -64,7 +64,7 @@ class Photonics_FDFD():
         The constant c0 in the QCQP field design objective. 
     """
     def __init__(self, omega, chi=None, Nx=None, Ny=None, Npmlx=None, Npmly=None, dx=None, dy=None, # FDFD solver attr
-                 des_mask=None, ji=None, ei=None, chi_background=None,# design problem attr
+                 des_mask=None, ji=None, ei=None, chi_background=None, # design problem attr
                  bloch_x=0.0, bloch_y=0.0, # FDFD solver attr
                  sparseQCQP=None, A0=None, s0=None, c0=0.0, Pdiags=None): # design problem attr
         """
@@ -109,6 +109,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         self.dl = dl
         self.des_mask = des_mask
         self.Ginv = None
+        self.G = None 
         self.M = None
 
         super().__init__(omega, chi, Nx, Ny, Npmlx, Npmly, dl, dl,
@@ -117,7 +118,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
                          sparseQCQP, A0, s0, c0)
         
         try:
-            check_attributes(self, 'omega', 'chi', 'Nx', 'Ny', 'Npmlx', 'Npmly', 'des_mask', 'chi_background', 'bloch_x', 'bloch_y')
+            check_attributes(self, 'omega', 'chi', 'Nx', 'Ny', 'Npmlx', 'Npmly', 'des_mask', 'chi_background', 'bloch_x', 'bloch_y', 'dl', 'sparseQCQP')
             self.setup_EM_solver()
             self.setup_EM_operators()
             
@@ -135,12 +136,9 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         """
         set the QCQP objective function
         """
-        if A0 is not None:
-            self.A0 = A0
-        if s0 is not None:
-            self.s0 = s0
-        if c0 is not None:
-            self.c0 = c0
+        if A0 is not None: self.A0 = A0
+        if s0 is not None: self.s0 = s0
+        if c0 is not None: self.c0 = c0
 
             
     def setup_EM_solver(self, omega=None, Nx=None, Ny=None, Npmlx=None, Npmly=None, dl=None, bloch_x=None, bloch_y=None):
@@ -165,7 +163,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         if self.sparseQCQP:
             self.Ginv, self.M = self.EM_solver.get_GaaInv(self.des_mask, self.chi_background)
         else:
-            raise ValueError("dense QCQP not implemented yet")
+            self.G = self.EM_solver.get_TM_Gba(self.des_mask, self.des_mask)
     
     def get_ei(self, ji = None, update=False):
         """
@@ -217,7 +215,18 @@ class Photonics_TM_FDFD(Photonics_FDFD):
                                             self.Pdiags, verbose
                                             )
         else:
-            raise ValueError("dense QCQP formulation not fully implemented yet")
+            if self.G is None: 
+                self.setup_EM_operators()
+            
+            A0_dense = self.A0
+            A1_dense = np.conj(1.0/self.chi)*np.eye(self.G.shape[0]) - self.G.conj().T
+            A2_dense = None 
+            s0_dense = self.s0
+
+            self.QCQP = DenseSharedProjQCQP(A0_dense, s0_dense, self.c0,
+                                            A1_dense, self.ei[self.des_mask]/2,
+                                            self.Pdiags, A2_dense, verbose
+                                            ) # Warning: order is different than sparse (because A2 is optional). 
 
     def bound_QCQP(self, method : str = 'bfgs', init_lags : np.ndarray = None, opt_params : dict = None):
         """
