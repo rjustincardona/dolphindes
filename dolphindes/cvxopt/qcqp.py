@@ -231,11 +231,10 @@ class _SharedProjQCQP(ABC):
         """
 
         P_diag = self._add_projectors(lags)
-        # P = sp.diags_array(P_diag, format='csc')
         A = self._get_total_A(lags)
         S = self._get_total_S(P_diag)
-
-        self._update_Acho(A) #update the Cholesky factorization
+        self._update_Acho(A) # update the Cholesky factorization
+        
         x_star = self._Acho_solve(S)
         xAx = np.real(x_star.conjugate() @ A @ x_star)
 
