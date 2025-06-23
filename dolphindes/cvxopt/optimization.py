@@ -368,7 +368,7 @@ class Alt_Newton_GD(_Optimizer):
                 
             # Simple objective value convergence 
             if iter_num % self.opt_params['break_iter_period'] == 0:
-                if self.verbose > 0 :print(f"iter_num: {iter_num}, prev_fx: {self.prev_fx}, opt_fx: {self.opt_fx}, opttol: {self.opt_params['opttol']}")
+                if self.verbose > 1 :print(f"iter_num: {iter_num}, prev_fx: {self.prev_fx}, opt_fx: {self.opt_fx}, opttol: {self.opt_params['opttol']}")
                 if np.abs(self.prev_fx - self.opt_fx) < np.abs(self.opt_fx)*self.opt_params['opttol'] or np.isclose(self.opt_fx, 0, atol=1e-14):
                     return True
                 self.prev_fx = self.opt_fx
@@ -381,7 +381,7 @@ class Alt_Newton_GD(_Optimizer):
             
             # If a max number of outer iterations was specified, check for that 
             if iter_num > self.opt_params['max_restart']:
-                if self.verbose >= 2: print(f"Maximum number of outer iterations reached: {self.opt_params['max_restart']}")
+                if self.verbose >= 1: print(f"Maximum number of outer iterations reached: {self.opt_params['max_restart']}")
                 return True
         
         return False
@@ -413,7 +413,7 @@ class Alt_Newton_GD(_Optimizer):
         self.prev_fx = np.inf
         self.prev_fx_outer = np.inf
         
-        outer_iter_count = 0
+        outer_iter_count = 1
 
         if self.verbose > 0:
             print(f"Starting optimization with x0 = {self.opt_x}")
@@ -422,14 +422,14 @@ class Alt_Newton_GD(_Optimizer):
             self.penalty_vector_list = [] # reset penalty vectors
             last_N_step_size = last_GD_step_size = 1.0 # reset step sizes
             
-            inner_iter_count = 0
+            inner_iter_count = 1
             
             if self.verbose > 0:
                 print(f"Outer iteration {outer_iter_count}, penalty_ratio = {self.opt_params['penalty_ratio']}, opt_fx = {self.opt_fx}")
             
             while True:
                 
-                doN = (inner_iter_count % 2 == 0) # alternate between Newton and GD steps
+                doN = (inner_iter_count % 2 == 1) # alternate between Newton and GD steps
                 self.opt_fx, self.xgrad, self.xhess, _ = self.optfunc(self.opt_x, get_grad=True,get_hess=doN, penalty_vectors=self.penalty_vector_list)
                 
                 if self.verbose > 1:
