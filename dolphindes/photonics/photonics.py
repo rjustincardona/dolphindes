@@ -233,9 +233,38 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         Calculate a limit on the QCQP
         """
         return self.QCQP.solve_current_dual_problem(method = method, init_lags = init_lags, opt_params = opt_params)
-        
 
+    def get_chi_inf(self):
+        """
+        Get the inferred chi from the QCQP dual solution. This may not be feasible if the QCQP is not strongly dual.
+        """
+        assert hasattr(self, 'QCQP'), "QCQP not initialized. Initialize and solve QCQP first."
+        assert self.QCQP.current_xstar is not None, "Inferred chi not available before solving QCQP dual"
+
+        P = self.QCQP.A2 @ self.QCQP.current_xstar  # Calculate polarization current
+        Es = self.QCQP.current_xstar
+        Etotal = self.get_ei()[self.des_mask] + Es
+        return P / Etotal
 
 class Photonics_TE_Yee_FDFD(Photonics_FDFD):
     def __init__(self):
         pass
+
+
+## Utility functions for photonics problems
+
+def chi_to_feasible_rho(chi_inf, chi_design):
+    """
+    Project the inferred chi to the feasible set defined by chi_design.
+    Resulting chi is chi_design * rho, where rho is in [0, 1].
+    
+    Parameters
+    ----------
+    chi_inf : np.ndarray
+        Inferred chi from Verlan optimization.
+    design_chi : complex
+        The design susceptibility of the problem.
+    """
+    rho = np.real(chi_inf.conj() * chi_design) / np.abs(chi_design)**2
+    rho = np.clip(rho, 0, 1)
+    return rho
