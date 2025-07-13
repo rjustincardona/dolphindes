@@ -10,6 +10,7 @@ __all__ = ['SparseSharedProjQCQP', 'DenseSharedProjQCQP']
 
 import copy
 import numpy as np
+import time
 import scipy.linalg as la
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
@@ -76,8 +77,10 @@ class _SharedProjQCQP(ABC):
         self.current_hess = None
         self.current_lags = None
         self.current_xstar = None
+        self.use_precomp = True
         
-        self.compute_precomputed_values()
+        if self.use_precomp:
+            self.compute_precomputed_values()
 
     def compute_precomputed_values(self):
         """
@@ -116,9 +119,20 @@ class _SharedProjQCQP(ABC):
         return self.Pdiags @ lags
     
     def _get_total_A(self, lags: np.ndarray) -> sp.csc_array | np.ndarray:
-        """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given sum_j lag[j] P_j"""
-        return self.A0 + sum(lags[i] * self.precomputed_As[i] for i in range(len(lags)))
+        """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given lag[j]"""
+        return self._get_total_A_precomp(lags) if self.use_precomp else self._get_total_A_noprecomp(lags)
     
+    def _get_total_A_precomp(self, lags: np.ndarray) -> sp.csc_array | np.ndarray:
+        """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given lag[j]. Should be faster for fewer constraints."""
+        return self.A0 + sum(lags[i] * self.precomputed_As[i] for i in range(len(lags)))
+
+    def _get_total_A_noprecomp(self, lags: np.ndarray) -> sp.csc_array | np.ndarray:
+        """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given sum_j lag[j] P_j, without using precomputed_As. Should be faster for many constraints."""
+        # TODO(alessio): P_diag is usually already computed before calling get_total_A. 
+        # Keeping it like this to not have to change the passed arguments, but should fix it at some point.
+        P_diag = self._add_projectors(lags)
+        return self.A0 + Sym(self.A1 @ sp.diags_array(P_diag, format='csr') @ self.A2)
+
     def _get_total_S(self, Pdiag: np.ndarray) -> np.ndarray:
         """Gets the total S vector for the QCQP = s0 + sum_j lag[j] P_j^dagger s1 given P = sum_j lag[j] P_j"""
         return self.s0 + self.A2.T.conj() @ (Pdiag.conj() * self.s1)
@@ -466,6 +480,31 @@ class _SharedProjQCQP(ABC):
                 opt_params=opt_params, 
                 max_gcd_iter_num=max_gcd_iter_num, gcd_iter_period=gcd_iter_period, gcd_tol=gcd_tol)
 
+    def optimize_get_A(self, trials = 20):
+        nconstr = self.get_number_constraints()
+        rand_lags = np.random.random(nconstr)
+        precomp_time = 0
+        no_precomp_time = 0
+        for _ in range(trials):
+            t1 = time.time()
+            self._get_total_A_noprecomp(rand_lags)
+            t2 = time.time()
+            self._get_total_A_precomp(rand_lags)
+            no_precomp_time += time.time() - t2
+            precomp_time += (t2 - t1)
+
+        if no_precomp_time <= precomp_time:
+            update = False
+            print(f"With #constraints = {nconstr}, empirical data suggests switching to use_precomp = {update}")
+        else:
+            update = True
+            print(f"With #constraints = {nconstr}, empirical data suggests using precomputed values.")
+        return False if no_precomp_time <= precomp_time else True
+
+    def update_use_precomp(self):
+        update = self.optimize_get_A()
+        print(f"Setting self.use_precomp = {update}")
+        self.use_precompt = update
 
 class SparseSharedProjQCQP(_SharedProjQCQP):
     """Represents a QCQP with a single type of constraint over projection regions.
@@ -663,9 +702,14 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         self.current_lags, residuals, rank, s = np.linalg.lstsq(new_Pdiags_real, old_Pdiags_real @ self.current_lags, rcond=None)
         self.Pdiags = new_Pdiags
         
-        # Re-calculate precomputed_As as the projectors have changed
-        self.compute_precomputed_values()
-    
+        # If we've been using the precomputed values, we just added new Pdiags so it may be beneficial to stop doing this
+        # TODO(alessio): Debug this, it works but not as intended
+        # if self.use_precomp:
+        #     self.compute_precomputed_values()  # Get new precomputed values for the comparison in the next run
+        #     self.update_use_precomp()
+
+        self.compute_precomputed_values()  # Get new precomputed values for the comparison in the next run
+
         # Reset current dual, grad, hess, xstar as they are for the old problem structure
         new_dual, new_grad, new_hess, dual_aux = self.get_dual(self.current_lags, get_grad=True, get_hess=False)
         if self.verbose >= 1: print(f'previous dual: {self.current_dual}, new dual: {new_dual} (should be the same)')
@@ -822,6 +866,9 @@ class DenseSharedProjQCQP(_SharedProjQCQP):
             A2 = sp.eye_array(len(s0), format='csc')
         
         super().__init__(A0, s0, c0, A1, A2, s1, Pdiags, verbose)
+    
+    def __repr__(self):
+        return f"DenseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
     
     def _update_Acho(self, A):
         """
