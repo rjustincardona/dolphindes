@@ -1,12 +1,16 @@
 """
-Dual Problem Interface
+Dual Problem Interface for Quadratically Constrained Quadratic Programming (QCQP).
 
+This module provides interfaces for solving QCQP problems with shared projection constraints
+using dual optimization methods. It includes both sparse and dense implementations optimized
+for different matrix structures.
 """
 
 __all__ = ['SparseSharedProjQCQP', 'DenseSharedProjQCQP']
 
 import copy
 import numpy as np
+import time
 import scipy.linalg as la
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
@@ -14,7 +18,7 @@ import sksparse.cholmod
 from .optimization import BFGS, Alt_Newton_GD
 from dolphindes.util import CRdot, Sym
 from collections import namedtuple
-from typing import Optional, Dict, Any, Tuple # For type hinting the new method
+from typing import Optional, Dict, Any, Tuple, Iterator # For type hinting the new method
 from abc import ABC, abstractmethod
 
 class _SharedProjQCQP(ABC):
@@ -44,7 +48,7 @@ class _SharedProjQCQP(ABC):
     Pdiags : np.ndarray
         The diagonal elements of the projection matrices P_j, as columns of a matrix Pdiags
         The second column j should always be one such that A0 + lambda A1 P_j is positive semidefinite for sufficiently large constant lambda.
-    verbose : float
+    verbose : int
         The verbosity level for debugging and logging.
     Acho : sksparse.cholmod.Cholesky | np.ndarray
         The Cholesky factorization of the total A matrix, which is updated when needed.
@@ -58,7 +62,7 @@ class _SharedProjQCQP(ABC):
         The current hess_lambda of the dual solution, which is only updated when the dual problem is solved. 
     """
     def __init__(self, A0: np.ndarray | sp.csc_array, s0: np.ndarray, c0: float, A1: np.ndarray | sp.csc_array, A2: np.ndarray | sp.csc_array, 
-                 s1: np.ndarray, Pdiags: np.ndarray, verbose: float = 0):
+                 s1: np.ndarray, Pdiags: np.ndarray, verbose: int = 0):
         self.A0 = A0
         self.s0 = s0
         self.s1 = s1
@@ -73,17 +77,24 @@ class _SharedProjQCQP(ABC):
         self.current_hess = None
         self.current_lags = None
         self.current_xstar = None
+        self.use_precomp = True
         
-        self.compute_precomputed_values()
+        if self.use_precomp:
+            self.compute_precomputed_values()
 
     def compute_precomputed_values(self):
-        # Precompute the A constraint matrices for each projector. This makes _get_total_A faster. 
+        """
+        Precompute the A constraint matrices for each projector. This makes _get_total_A faster for a small number of constraints.
+        Also precompute Fs = A2^dagger P_k^dagger s1 for each projector, which makes _get_total_S faster.
+        """
+        
         self.precomputed_As = []
         for i in range(self.Pdiags.shape[1]):
             Ak = Sym(self.A1 @ sp.diags_array(self.Pdiags[:, i], format='csr') @ self.A2)
             self.precomputed_As.append(Ak)
         
-        print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
+        if self.verbose > 0:
+            print(f"Precomputed {self.Pdiags.shape[1]} A matrices for the projectors.")
 
         # (Fs)_k = A_2^dagger P_k^dagger s1
         self.Fs = self.A2.conj().T @ (self.Pdiags.conj().T * self.s1).T
@@ -108,9 +119,20 @@ class _SharedProjQCQP(ABC):
         return self.Pdiags @ lags
     
     def _get_total_A(self, lags: np.ndarray) -> sp.csc_array | np.ndarray:
-        """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given sum_j lag[j] P_j"""
-        return self.A0 + sum(lags[i] * self.precomputed_As[i] for i in range(len(lags)))
+        """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given lag[j]"""
+        return self._get_total_A_precomp(lags) if self.use_precomp else self._get_total_A_noprecomp(lags)
     
+    def _get_total_A_precomp(self, lags: np.ndarray) -> sp.csc_array | np.ndarray:
+        """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given lag[j]. Should be faster for fewer constraints."""
+        return self.A0 + sum(lags[i] * self.precomputed_As[i] for i in range(len(lags)))
+
+    def _get_total_A_noprecomp(self, lags: np.ndarray) -> sp.csc_array | np.ndarray:
+        """Gets the total A matrix for the QCQP = A0 + sum_j lag[j] A1 P_j A2 given sum_j lag[j] P_j, without using precomputed_As. Should be faster for many constraints."""
+        # TODO(alessio): P_diag is usually already computed before calling get_total_A. 
+        # Keeping it like this to not have to change the passed arguments, but should fix it at some point.
+        P_diag = self._add_projectors(lags)
+        return self.A0 + Sym(self.A1 @ sp.diags_array(P_diag, format='csr') @ self.A2)
+
     def _get_total_S(self, Pdiag: np.ndarray) -> np.ndarray:
         """Gets the total S vector for the QCQP = s0 + sum_j lag[j] P_j^dagger s1 given P = sum_j lag[j] P_j"""
         return self.s0 + self.A2.T.conj() @ (Pdiag.conj() * self.s1)
@@ -146,7 +168,7 @@ class _SharedProjQCQP(ABC):
         pass
     
     @abstractmethod
-    def is_dual_feasible(self, lags: np.ndarray) -> bool:
+    def is_dual_feasible(self, lags: np.ndarray):
         """
         Checks if a set of Lagrange multipliers is dual feasible by attempting a Cholesky decomposition.
         Needs to be implemented by subclasses.
@@ -192,7 +214,7 @@ class _SharedProjQCQP(ABC):
         if self.verbose > 0: print(f"Found feasible point for dual problem: {init_lags} with dualvalue {self.get_dual(init_lags)[0]}")
         return init_lags
     
-    def _get_PSD_penalty(self, lags) -> np.ndarray:
+    def _get_PSD_penalty(self, lags: np.ndarray) -> Tuple[np.ndarray, float]:
         """
         Returns the eigenvector for the smallest eigenvalue. This vector can be used to calculate the PSD boundary of the dual function.
         In theory, other PSD penalties exist, such as the determinant. We found that this works well for photonic limits. 
@@ -206,13 +228,14 @@ class _SharedProjQCQP(ABC):
         -------
         eigv : np.ndarray
             Eigenvector corresponding to the lowest eigenvalue of A(lags)
+        eigw : float
+            Eigenvalue corresponding to the lowest eigenvalue of A(lags)
         """
         A = self._get_total_A(lags)
         eigw, eigv = spla.eigsh(A, k=1, sigma=0.0, which='LM', return_eigenvectors=True)
-        aux = eigw
-        return eigv[:,0], aux
+        return eigv[:,0], eigw[0]
 
-    def _get_xstar(self, lags: np.ndarray) -> tuple[sksparse.cholmod.Factor, np.ndarray, float]:
+    def _get_xstar(self, lags: np.ndarray) -> Tuple[np.ndarray, float]:
         """For a total A and S, solve for xstar using the cholesky factorization of A
         
         For a given set of Lagrange multipliers, which define A and S, the x_star that maximizes the Lagrangian 
@@ -220,10 +243,13 @@ class _SharedProjQCQP(ABC):
         of A is known, because the sparsity pattern of A is always known, this solution can be found very
         efficiently. 
 
+        Parameters
+        ----------
+        lags : np.ndarray
+            The lagrange multipliers for the projectors.
+
         Returns
         -------
-        Acho : sksparse.cholmod.Cholesky
-            The cholesky factorization of A.
         x_star : np.ndarray
             The solution x_star to the equation A x_star = S.
         xAx : float
@@ -240,7 +266,7 @@ class _SharedProjQCQP(ABC):
 
         return x_star, xAx
     
-    def get_dual(self, lags: np.ndarray, get_grad: bool = False, get_hess: bool = False, penalty_vectors: list = []) -> tuple[float, np.ndarray, np.ndarray]:
+    def get_dual(self, lags: np.ndarray, get_grad: bool = False, get_hess: bool = False, penalty_vectors: Optional[list] = None) -> Tuple[float, Optional[np.ndarray], Optional[np.ndarray], Any]:
         """Gets the dual value and the derivatives of the dual with respect to Lagrange multipliers.
 
         Parameters
@@ -259,14 +285,18 @@ class _SharedProjQCQP(ABC):
         -------
         dualval : float
             The value of the dual function.
-        grad : np.ndarray
+        grad : np.ndarray or None
             The gradient of the dual function with respect to the lagrange multipliers, if requested.
-        hess : np.ndarray
+        hess : np.ndarray or None
             The Hessian of the dual function with respect to the lagrange multipliers, if requested.
+        dual_aux : namedtuple
+            Auxiliary information about the dual computation.
         """
+        if penalty_vectors is None:
+            penalty_vectors = []
 
-        grad, hess = [], []
-        grad_penalty, hess_penalty = [], []
+        grad, hess = None, None
+        grad_penalty, hess_penalty = np.array([]), np.array([[]])
 
         xstar, dualval = self._get_xstar(lags)
         dualval += self.c0
@@ -343,7 +373,7 @@ class _SharedProjQCQP(ABC):
         else:
             return dualval, grad, hess, dual_aux
 
-    def solve_current_dual_problem(self, method: str, opt_params: dict = None, init_lags: np.ndarray = None):
+    def solve_current_dual_problem(self, method: str, opt_params: dict = None, init_lags: np.ndarray = None) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Solves the current dual problem using the specified method.
 
@@ -351,6 +381,23 @@ class _SharedProjQCQP(ABC):
         ----------
         method : str
             The method to use for solving the dual problem. 'newton' or 'bfgs'
+        opt_params : dict, optional
+            Parameters for the optimization algorithm.
+        init_lags : np.ndarray, optional
+            Initial Lagrange multipliers. If None, will find feasible point automatically.
+            
+        Returns
+        -------
+        current_dual : float
+            The optimal dual value.
+        current_lags : np.ndarray
+            The optimal Lagrange multipliers.
+        current_grad : np.ndarray
+            The gradient at the optimal point.
+        current_hess : np.ndarray
+            The Hessian at the optimal point.
+        current_xstar : np.ndarray
+            The dual-optimal primal variable.
         """
         is_convex = True
         
@@ -373,38 +420,92 @@ class _SharedProjQCQP(ABC):
         else: 
             raise ValueError(f"Unknown method '{method}' for solving the dual problem. Use newton or bfgs.")
         
-        self.current_lags, self.current_dual, self.current_grad = optimizer.run(init_lags)
+        self.current_lags, self.current_dual, self.current_grad, self.current_hess = optimizer.run(init_lags)
         self.current_xstar, _ = self._get_xstar(self.current_lags)
 
         return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
     
-    def merge_lead_constraints(self, merged_num: int = 2):
+    def merge_lead_constraints(self, merged_num: int = 2) -> None:
         """
         Merge the lead constraints of this QCQP.
         See module-level merge_lead_constraints() for details.
+        
+        Parameters
+        ----------
+        merged_num : int, optional
+            Number of leading constraints to merge, by default 2.
         """
         merge_lead_constraints(self, merged_num=merged_num)
     
-    def add_constraints(self, added_Pdiag_list: list, orthonormalize: bool=True):
+    def add_constraints(self, added_Pdiag_list: list, orthonormalize: bool = True) -> None:
         """
         Add new constraints to this QCQP.
         See module-level add_constraints() for details.
+        
+        Parameters
+        ----------
+        added_Pdiag_list : list
+            List of constraint diagonal matrices to add.
+        orthonormalize : bool, optional
+            Whether to orthonormalize constraints, by default True.
         """
         add_constraints(self, added_Pdiag_list=added_Pdiag_list, orthonormalize=orthonormalize)
     
-    def run_gcd(self, 
-                max_cstrt_num: int = 10, orthonormalize: bool=True,
-                opt_params=None, max_gcd_iter_num=50, gcd_iter_period=5, gcd_tol=1e-2):
-       """
-       run general constraint descent to approach tightest dual bound for this QCQP.
-       See module-level run_gcd() for details.
-       """
-       run_gcd(self, 
-               max_cstrt_num=max_cstrt_num, orthonormalize=orthonormalize,
-               opt_params=opt_params, 
-               max_gcd_iter_num=max_gcd_iter_num, gcd_iter_period=gcd_iter_period, gcd_tol=gcd_tol)
+    def run_gcd(self,
+                max_cstrt_num: int = 10, orthonormalize: bool = True,
+                opt_params: Optional[dict] = None, max_gcd_iter_num: int = 50, 
+                gcd_iter_period: int = 5, gcd_tol: float = 1e-2) -> None:
+        """
+        Run general constraint descent to approach tightest dual bound for this QCQP.
+        See module-level run_gcd() for details. Modifies the existing QCQP object.
 
-    
+        Parameters
+        ----------
+        max_cstrt_num : int
+            The maximum number of constraints to consider.
+        orthonormalize : bool
+            Whether to orthonormalize the constraints.
+        opt_params : dict
+            Optimization parameters.
+        max_gcd_iter_num : int
+            Maximum number of GCD iterations.
+        gcd_iter_period : int
+            Period for GCD iterations.
+        gcd_tol : float
+            Tolerance for GCD convergence.
+
+        """
+        run_gcd(self,
+                max_cstrt_num=max_cstrt_num, orthonormalize=orthonormalize,
+                opt_params=opt_params, 
+                max_gcd_iter_num=max_gcd_iter_num, gcd_iter_period=gcd_iter_period, gcd_tol=gcd_tol)
+
+    def optimize_get_A(self, trials = 20):
+        nconstr = self.get_number_constraints()
+        rand_lags = np.random.random(nconstr)
+        precomp_time = 0
+        no_precomp_time = 0
+        for _ in range(trials):
+            t1 = time.time()
+            self._get_total_A_noprecomp(rand_lags)
+            t2 = time.time()
+            self._get_total_A_precomp(rand_lags)
+            no_precomp_time += time.time() - t2
+            precomp_time += (t2 - t1)
+
+        if no_precomp_time <= precomp_time:
+            update = False
+            print(f"With #constraints = {nconstr}, empirical data suggests switching to use_precomp = {update}")
+        else:
+            update = True
+            print(f"With #constraints = {nconstr}, empirical data suggests using precomputed values.")
+        return False if no_precomp_time <= precomp_time else True
+
+    def update_use_precomp(self):
+        update = self.optimize_get_A()
+        print(f"Setting self.use_precomp = {update}")
+        self.use_precompt = update
+
 class SparseSharedProjQCQP(_SharedProjQCQP):
     """Represents a QCQP with a single type of constraint over projection regions.
 
@@ -567,13 +668,14 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
             nonzero_indices = np.where(P_j_diag != 0)[0]
             num_nonzero = len(nonzero_indices)
 
-            if num_nonzero == 1: # Projector is already a single pixel, keep it as is
+            if num_nonzero == 1:  # Projector is already a single pixel, keep it as is
                 new_Pdiags_cols.append(P_j_diag)
                 #new_lags_list.append(current_lag_j)
             elif num_nonzero > 1: # Split the projector
                 split_point = num_nonzero // 2
                 indices1 = nonzero_indices[:split_point]
                 indices2 = nonzero_indices[split_point:]
+                
                 # Create new projector P1
                 P1_diag_new = np.zeros_like(P_j_diag)
                 P1_diag_new[indices1] = P_j_diag[indices1]  # Copy values from original projector
@@ -600,9 +702,14 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         self.current_lags, residuals, rank, s = np.linalg.lstsq(new_Pdiags_real, old_Pdiags_real @ self.current_lags, rcond=None)
         self.Pdiags = new_Pdiags
         
-        # Re-calculate precomputed_As as the projectors have changed
-        self.compute_precomputed_values()
-    
+        # If we've been using the precomputed values, we just added new Pdiags so it may be beneficial to stop doing this
+        # TODO(alessio): Debug this, it works but not as intended
+        # if self.use_precomp:
+        #     self.compute_precomputed_values()  # Get new precomputed values for the comparison in the next run
+        #     self.update_use_precomp()
+
+        self.compute_precomputed_values()  # Get new precomputed values for the comparison in the next run
+
         # Reset current dual, grad, hess, xstar as they are for the old problem structure
         new_dual, new_grad, new_hess, dual_aux = self.get_dual(self.current_lags, get_grad=True, get_hess=False)
         if self.verbose >= 1: print(f'previous dual: {self.current_dual}, new dual: {new_dual} (should be the same)')
@@ -615,7 +722,7 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         
         return self.Pdiags, self.current_lags
 
-    def iterative_splitting_step(self, method : str = 'bfgs', max_cstrt_num : int = np.inf):
+    def iterative_splitting_step(self, method: str = 'bfgs', max_cstrt_num: int = np.inf) -> Iterator[Tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
         """
         Iterative splitting step generator function that continues until pixel-level constraints are reached.
 
@@ -750,15 +857,18 @@ class DenseSharedProjQCQP(_SharedProjQCQP):
         The current hess_lambda of the dual solution, which is only updated when the dual problem is solved. 
     """
     
-    def __init__(self, A0: np.ndarray, s0: np.ndarray, c0: float, A1: np.ndarray, 
-                 s1: np.ndarray, Pdiags: np.ndarray, 
-                 A2: np.ndarray = None, 
+    def __init__(self, A0: np.ndarray, s0: np.ndarray, c0: float, A1: np.ndarray,
+                 s1: np.ndarray, Pdiags: np.ndarray,
+                 A2: np.ndarray = None,
                  verbose: float = 0):
         
         if A2 is None:
             A2 = sp.eye_array(len(s0), format='csc')
         
         super().__init__(A0, s0, c0, A1, A2, s1, Pdiags, verbose)
+    
+    def __repr__(self):
+        return f"DenseSharedProjQCQP of size {self.A0.shape[0]}^2 with {self.Pdiags.shape[1]} projectors."
     
     def _update_Acho(self, A):
         """
@@ -813,10 +923,10 @@ class DenseSharedProjQCQP(_SharedProjQCQP):
 GCD methods below
 """
 
-def merge_lead_constraints(QCQP: _SharedProjQCQP, merged_num: int = 2):
+def merge_lead_constraints(QCQP: _SharedProjQCQP, merged_num: int = 2) -> None:
     """
-    merge the first m constraints of QCQP into a single constraint
-    also adjust the Lagrange multipliers so the dual value is the same
+    Merge the first m constraints of QCQP into a single constraint.
+    Also adjust the Lagrange multipliers so the dual value is the same.
     
     Parameters
     ----------
@@ -824,6 +934,11 @@ def merge_lead_constraints(QCQP: _SharedProjQCQP, merged_num: int = 2):
         QCQP for which we merge the leading constraints.
     merged_num : int (optional, default 2)
         Number of leading constraints that we are merging together; should be at least 2.
+        
+    Raises
+    ------
+    ValueError
+        If merged_num < 2 or if there are insufficient constraints for merging.
     """
     x_size, cstrt_num = QCQP.Pdiags.shape
     if merged_num < 2:
@@ -863,17 +978,17 @@ def merge_lead_constraints(QCQP: _SharedProjQCQP, merged_num: int = 2):
     QCQP.current_lags = new_lags
     QCQP.current_grad = QCQP.current_hess = None # in principle can merge dual derivatives but leave it undone for now
 
-def add_constraints(QCQP: _SharedProjQCQP, added_Pdiag_list: list, orthonormalize: bool=True):
+def add_constraints(QCQP: _SharedProjQCQP, added_Pdiag_list: list, orthonormalize: bool = True) -> None:
     """
-    method that adds new constraints into an existing QCQP. 
+    Method that adds new constraints into an existing QCQP. 
     
     Parameters
     ----------
     QCQP : _SharedProjQCQP
         QCQP for which the new constraints are added in.
     added_Pdiag_list : list
-        List of 1d numpy arrays that are the new constraints to be added in
-    orthonormalize : bool
+        List of 1d numpy arrays that are the new constraints to be added in.
+    orthonormalize : bool, optional
         If true, assume that QCQP has orthonormal constraints and keeps it that way.
     """
     x_size, cstrt_num = QCQP.Pdiags.shape
@@ -921,7 +1036,7 @@ def run_gcd(QCQP: _SharedProjQCQP,
             opt_params=None, max_gcd_iter_num=50, gcd_iter_period=5, gcd_tol=1e-2):
     """
     Perform generalized constraint descent to gradually refine dual bound on QCQP.
-    TODO: formalize optimization and convergence parameters.
+
     Parameters
     ----------
     QCQP : _SharedProjQCQP
@@ -930,8 +1045,18 @@ def run_gcd(QCQP: _SharedProjQCQP,
         The maximum constraint number for QCQP. The default is 10.
     orthonormalize : bool, optional
         Whether or not to orthonormalize the constraint projectors. The default is True.
-    opt_params: dictionary, optional
-        The opt_params for the internal _Optimizer run at every GCD iteration. 
+    opt_params : dict, optional
+        The opt_params for the internal _Optimizer run at every GCD iteration.
+    max_gcd_iter_num : int, optional
+        Maximum number of GCD iterations, by default 50.
+    gcd_iter_period : int, optional
+        Period for checking convergence, by default 5.
+    gcd_tol : float, optional
+        Tolerance for convergence, by default 1e-2.
+        
+    Notes
+    -----
+    TODO: formalize optimization and convergence parameters.
     """
     # since GCD is constantly changing the constraints, no need for many fake source iterations
     OPT_PARAMS_DEFAULTS = {'max_restart':1}

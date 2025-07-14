@@ -193,6 +193,7 @@ class TestQCQP:
 
         print("Testing the merging of constraints")
         from dolphindes.cvxopt import merge_lead_constraints
+        sparse_ldos_qcqp.compute_precomputed_values()
         dual_opt, dual_grad, dual_hess, _ = sparse_ldos_qcqp.get_dual(sparse_ldos_qcqp.current_lags, get_grad=True, get_hess=True)
         
         merge_lead_constraints(sparse_ldos_qcqp, 5)

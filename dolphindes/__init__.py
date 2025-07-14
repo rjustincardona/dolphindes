@@ -17,12 +17,12 @@ cvxopt
     Optimization problems and routines 
 photonics
     Photonic dual optimization interface
-inverse_design
-    Photonic inverse design interface 
 maxwell 
     Maxwell solver
 
 """
 
-__all__ = ['photonics', 'util']
+__version__ = "0.1.0"
+
+__all__ = ['photonics', 'cvxopt', 'maxwell', 'util', '__version__']
 

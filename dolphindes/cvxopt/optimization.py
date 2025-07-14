@@ -331,7 +331,7 @@ class BFGS(_Optimizer):
             outer_iter_count += 1
             self.opt_params['penalty_ratio'] *= self.opt_params['penalty_reduction']
             
-        return self.opt_x, self.opt_fx, self.xgrad
+        return self.opt_x, self.opt_fx, self.xgrad, None
 
 
 class Alt_Newton_GD(_Optimizer):
@@ -470,5 +470,5 @@ class Alt_Newton_GD(_Optimizer):
             self.opt_params['penalty_ratio'] *= self.opt_params['penalty_reduction']
             outer_iter_count += 1
         
-        return self.opt_x, self.opt_fx, self.xgrad
+        return self.opt_x, self.opt_fx, self.xgrad, self.xhess
         
