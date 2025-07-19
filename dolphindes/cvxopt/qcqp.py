@@ -1040,7 +1040,7 @@ def add_constraints(QCQP: _SharedProjQCQP, added_Pdiag_list: list, orthonormaliz
 
 def run_gcd(QCQP: _SharedProjQCQP, 
             max_cstrt_num: int = 10, orthonormalize: bool=True,
-            opt_params=None, max_gcd_iter_num=10, gcd_iter_period=5, gcd_tol=1e-2):
+            opt_params=None, max_gcd_iter_num=50, gcd_iter_period=5, gcd_tol=1e-2):
     """
     Perform generalized constraint descent to gradually refine dual bound on QCQP.
     
@@ -1051,9 +1051,9 @@ def run_gcd(QCQP: _SharedProjQCQP,
     Lagrangian quadratic form eigenvalue is large, to help the dual optimization
     navigate the semi-definite boundary
     
-    If the total number of constraints is larger than max_gcd_iter_num combine 
+    If the total number of constraints is larger than max_gcd_cstrt_num combine 
     the earlier constraints to keep the total number of constraints fixed. Setting
-    max_gcd_iter_num large enough will eventually result in evaluating the dual bound
+    max_cstrt_num large enough will eventually result in evaluating the dual bound
     with all possible constraints, which gives the tightest bound but may be extremely
     expensive. The goal of GCD is to approximate this tightest bound with greatly reduced
     computational cost.
