@@ -1,6 +1,6 @@
 # Dolphindes 🐬
 
-Dolphindes (very loosely, Dual Optimization Limits for PHotonic INverse DESign) is a Python package for calculating limits on the performance of photonic devices using dual optimization methods. It can calculate structure-agnostic performance bounds for a wide range of photonic problems. The package works by relaxing the photonic inverse design problem into a field optimization problem, which can then be further relaxed into a convex problem using Lagrange duality. 
+Dolphindes (very loosely, Dual Optimization Limits for PHotonic/PHysical INverse DESign) is a Python package for calculating limits on the performance of photonic devices using dual optimization methods. It can calculate structure-agnostic performance bounds for a wide range of photonic problems. The package works by relaxing the photonic inverse design problem into a field optimization problem, which can then be further relaxed into a convex problem using Lagrange duality. 
 
 ## 📦 Installation 
 
@@ -15,8 +15,7 @@ sudo apt-get update
 sudo apt-get install libsuitesparse-dev
 ``` 
 
-### 2. Activate the provided conda environment dolphindes.yml
-
+### 2. Setup and activate the provided conda environment dolphindes.yml
 
 ## 🔧 Running Tests
 
@@ -27,6 +26,10 @@ pytest
 ```
 
 Optionally, provide the -s flag to print the output of the tests. You will need to have `pytest` and `pytest-dependency` installed in your environment. 
+
+## 📚 Documentation and Tutorials
+
+We are currently working on more comprehensive documentation. For now, please refer to the Jupyter Notebooks in the examples/ directory for detailed demonstrations on using dolphindes to compute bounds for photonic inverse design problems and extract design templates. 
 
 ## Citations
 
