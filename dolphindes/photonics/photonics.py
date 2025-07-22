@@ -118,7 +118,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
                          sparseQCQP, A0, s0, c0)
         
         try:
-            check_attributes(self, 'omega', 'chi', 'Nx', 'Ny', 'Npmlx', 'Npmly', 'des_mask', 'chi_background', 'bloch_x', 'bloch_y', 'dl', 'sparseQCQP')
+            check_attributes(self, 'omega', 'chi', 'Nx', 'Ny', 'Npmlx', 'Npmly', 'des_mask', 'bloch_x', 'bloch_y', 'dl', 'sparseQCQP')
             self.setup_EM_solver()
             self.setup_EM_operators()
             
