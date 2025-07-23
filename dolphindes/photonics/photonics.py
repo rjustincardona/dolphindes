@@ -134,7 +134,16 @@ class Photonics_TM_FDFD(Photonics_FDFD):
 
     def set_objective(self, A0=None, s0=None, c0=0.0):
         """
-        set the QCQP objective function
+        Set the QCQP objective function parameters.
+        
+        Parameters
+        ----------
+        A0 : complex np.ndarray or scipy.sparse.csc_array, optional
+            The matrix A0 in the QCQP objective function.
+        s0 : complex np.ndarray, optional
+            The vector s0 in the QCQP objective function.
+        c0 : float, optional
+            The constant c0 in the QCQP objective function. Default: 0.0
         """
         if A0 is not None: self.A0 = A0
         if s0 is not None: self.s0 = s0
@@ -143,7 +152,31 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             
     def setup_EM_solver(self, omega=None, Nx=None, Ny=None, Npmlx=None, Npmly=None, dl=None, bloch_x=None, bloch_y=None):
         """
-        setup the solver. non-None arguments will define / modify corresponding attributes
+        Setup the FDFD electromagnetic solver with given parameters.
+        
+        Parameters
+        ----------
+        omega : complex, optional
+            Circular frequency, can be complex to allow for finite bandwidth effects.
+        Nx : int, optional
+            Number of pixels along the x direction.
+        Ny : int, optional
+            Number of pixels along the y direction.
+        Npmlx : int, optional
+            Size of the x direction PML in pixels.
+        Npmly : int, optional
+            Size of the y direction PML in pixels.
+        dl : float, optional
+            Finite difference grid pixel size, assumed same for x and y directions.
+        bloch_x : float, optional
+            x-direction phase shift for periodic boundary conditions. Default: 0.0
+        bloch_y : float, optional
+            y-direction phase shift for periodic boundary conditions. Default: 0.0
+            
+        Notes
+        -----
+        Non-None arguments will define or modify corresponding attributes.
+        Creates a TM_FDFD solver instance and stores it in self.EM_solver.
         """
         params = locals()
         params.pop('self')
@@ -157,7 +190,21 @@ class Photonics_TM_FDFD(Photonics_FDFD):
     
     def setup_EM_operators(self):
         """
-        setup EM operators associated with the given design region and background
+        Setup electromagnetic operators for the design region and background.
+        
+        Notes
+        -----
+        This method creates the appropriate operators based on whether sparse or dense
+        QCQP formulation is used:
+        - For sparse QCQP: Creates Ginv (inverse Green's function) and M operators
+        - For dense QCQP: Creates G (Green's function) operator
+        
+        Requires self.des_mask to be defined.
+        
+        Raises
+        ------
+        AttributeError
+            If des_mask is not defined.
         """
         check_attributes(self, 'des_mask')
         if self.sparseQCQP:
@@ -167,7 +214,20 @@ class Photonics_TM_FDFD(Photonics_FDFD):
     
     def get_ei(self, ji = None, update=False):
         """
-        get the incident field
+        Get or compute the incident electromagnetic field.
+        
+        Parameters
+        ----------
+        ji : np.ndarray, optional
+            Current source for computing incident field. If None, uses self.ji.
+        update : bool, optional
+            Whether to update self.ei with the computed field. Default: False
+            
+        Returns
+        -------
+        ei : np.ndarray
+            The incident electromagnetic field. If self.ei exists, returns it directly.
+            Otherwise computes it using the EM solver.
         """
         if self.ei is None:
             ei = self.EM_solver.get_TM_field(ji, self.chi_background) if self.ji is None else self.EM_solver.get_TM_field(self.ji, self.chi_background)
@@ -177,11 +237,39 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         return ei
     
     def set_ei(self, ei):
+        """
+        Set the incident electromagnetic field.
+        
+        Parameters
+        ----------
+        ei : np.ndarray
+            The incident electromagnetic field to store.
+        """
         self.ei = ei 
         
     def setup_QCQP(self, Pdiags="global", verbose: float = 0):
         """
+        Setup the quadratically constrained quadratic programming (QCQP) problem.
         
+        Parameters
+        ----------
+        Pdiags : str or np.ndarray, optional
+            Specification for projection matrix diagonals. If "global", creates
+            global projectors with ones and -1j entries. Default: "global"
+        verbose : float, optional
+            Verbosity level for debugging output. Default: 0
+            
+        Notes
+        -----        
+        For sparse QCQP, creates SparseSharedProjQCQP with transformed matrices.
+        For dense QCQP, creates DenseSharedProjQCQP with original matrices.
+        
+        Raises
+        ------
+        AttributeError
+            If required attributes (des_mask, A0, s0, c0) are not defined.
+        ValueError
+            If neither ji nor ei is specified, or if Pdiags specification is invalid.
         """
         check_attributes(self, 'des_mask', 'A0', 's0', 'c0')
         
@@ -230,13 +318,45 @@ class Photonics_TM_FDFD(Photonics_FDFD):
 
     def bound_QCQP(self, method : str = 'bfgs', init_lags : np.ndarray = None, opt_params : dict = None):
         """
-        Calculate a limit on the QCQP
+        Calculate a bound on the QCQP dual problem.
+        
+        Parameters
+        ----------
+        method : str, optional
+            Optimization method to use. Options: 'bfgs', 'newton'. Default: 'bfgs'
+        init_lags : np.ndarray, optional
+            Initial Lagrange multipliers for optimization. If None, finds feasible point.
+        opt_params : dict, optional
+            Additional parameters for the optimization algorithm.
+            
+        Returns
+        -------
+        result : tuple
+            Result from QCQP dual problem solver containing:
+            (dual_value, lagrange_multipliers, gradient, hessian, primal_variable)
         """
         return self.QCQP.solve_current_dual_problem(method = method, init_lags = init_lags, opt_params = opt_params)
 
     def get_chi_inf(self):
         """
-        Get the inferred chi from the QCQP dual solution. This may not be feasible if the QCQP is not strongly dual.
+        Get the inferred susceptibility from the QCQP dual solution.
+        
+        Returns
+        -------
+        chi_inf : np.ndarray
+            The inferred susceptibility χ_inf = P / E_total, where P is the 
+            polarization current and E_total is the total electric field.
+            
+        Notes
+        -----
+        This represents the material susceptibility that would be required to 
+        achieve the optimal field distribution found by the QCQP solver.
+        The inferred chi may not be physically feasible for nonzero duality gap.
+        
+        Raises
+        ------
+        AssertionError
+            If QCQP has not been initialized or solved yet.
         """
         assert hasattr(self, 'QCQP'), "QCQP not initialized. Initialize and solve QCQP first."
         assert self.QCQP.current_xstar is not None, "Inferred chi not available before solving QCQP dual"
