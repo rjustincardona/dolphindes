@@ -14,12 +14,17 @@ from dolphindes.util import check_attributes
 from typing import Tuple 
 import warnings
 
-import warnings
-
 class Photonics_FDFD():
     """
     Mother class for frequency domain photonics problems numerically described using FDFD.
     To allow for lazy initialization, only demands omega upon init
+    
+    Specification of the photonics design objective:
+    if sparseQCQP is False, the objective is specified as a quadratic function of the polarization p
+    max_p -p^dagger A0 p + 2 Re (p^dagger s0) + c0
+    
+    if sparseQCQP is True, the objective is specified as a quadratic function of (Gp)
+    max_{Gp} -(Gp)^dagger A0 (Gp) + 2 Re((Gp)^dagger s0) + c0
     
     Attributes
     ----------
@@ -123,18 +128,19 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             self.setup_EM_operators()
             
         except AttributeError as e:
-            warnings.warn(f"Photonics_TM_FDFD initialized with missing attributes (lazy initialization). We strongly recommend passing all arguments for expected behavior.")
+            warnings.warn("Photonics_TM_FDFD initialized with missing attributes (lazy initialization). We strongly recommend passing all arguments for expected behavior.")
 
     def __repr__(self):
         return (f"Photonics_TM_FDFD(omega={self.omega}, chi={self.chi}, Nx={self.Nx}, "
                 f"Ny={self.Ny}, Npmlx={self.Npmlx}, Npmly={self.Npmly}, dl={self.dl}, "
                 f"des_mask={self.des_mask is not None}, ji={self.ji is not None}, "
                 f"ei={self.ei is not None}, chi_background={self.chi_background is not None}, "
-                f"bloch_x={self.bloch_x}, bloch_y={self.bloch_y})")
+                f"bloch_x={self.bloch_x}, bloch_y={self.bloch_y}, sparseQCQP={self.sparseQCQP})")
 
-    def set_objective(self, A0=None, s0=None, c0=0.0):
+    def set_objective(self, A0=None, s0=None, c0=None, denseToSparse=False):
         """
-        Set the QCQP objective function parameters.
+        Set the QCQP objective function parameters. Not specifying a particular
+        parameter leaves it unchanged.
         
         Parameters
         ----------
@@ -144,9 +150,22 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             The vector s0 in the QCQP objective function.
         c0 : float, optional
             The constant c0 in the QCQP objective function. Default: 0.0
+        denseToSparse: bool, optional
+            If True, treat input A0 and s0 as describing forms
+            of the polarization p, and convert them to the equivalent forms
+            of (Gp) before assigning to the class attributes. Default: False
         """
-        if A0 is not None: self.A0 = A0
-        if s0 is not None: self.s0 = s0
+        if denseToSparse:
+            if not self.sparseQCQP:
+                raise ValueError('sparseQCQP needs to be True to use dense-to-sparse conversion.')
+            if A0 is not None:
+                self.A0 = self.Ginv.T.conj() @ sp.csc_array(A0) @ self.Ginv
+            if s0 is not None:
+                self.s0 = self.Ginv.T.conj() @ s0
+        else:
+            if A0 is not None: self.A0 = A0
+            if s0 is not None: self.s0 = s0
+        
         if c0 is not None: self.c0 = c0
 
             
@@ -293,28 +312,23 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             if (self.Ginv is None) or (self.M is None):
                 self.setup_EM_operators()
             
-            A0_sparse = self.Ginv.T.conj() @ sp.csc_array(self.A0) @ self.Ginv
             A1_sparse = sp.csc_array(np.conj(1.0/self.chi) * self.Ginv.conj().T - sp.eye(self.Ndes))
             A2_sparse = sp.csc_array(self.Ginv)
-            s0_sparse = self.Ginv.T.conj() @ self.s0
 
-            self.QCQP = SparseSharedProjQCQP(A0_sparse, s0_sparse, self.c0, 
+            self.QCQP = SparseSharedProjQCQP(self.A0, self.s0, self.c0, 
                                             A1_sparse, A2_sparse, self.ei[self.des_mask]/2, 
-                                            self.Pdiags, verbose
+                                            self.Pdiags, verbose=verbose
                                             )
         else:
             if self.G is None: 
                 self.setup_EM_operators()
             
-            A0_dense = self.A0
             A1_dense = np.conj(1.0/self.chi)*np.eye(self.G.shape[0]) - self.G.conj().T
-            A2_dense = None 
-            s0_dense = self.s0
 
-            self.QCQP = DenseSharedProjQCQP(A0_dense, s0_dense, self.c0,
+            self.QCQP = DenseSharedProjQCQP(self.A0, self.s0, self.c0,
                                             A1_dense, self.ei[self.des_mask]/2,
-                                            self.Pdiags, A2_dense, verbose
-                                            ) # Warning: order is different than sparse (because A2 is optional). 
+                                            self.Pdiags, verbose=verbose
+                                            ) # for dense QCQP formulation A2 is not needed 
 
     def bound_QCQP(self, method : str = 'bfgs', init_lags : np.ndarray = None, opt_params : dict = None):
         """
@@ -360,9 +374,14 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         """
         assert hasattr(self, 'QCQP'), "QCQP not initialized. Initialize and solve QCQP first."
         assert self.QCQP.current_xstar is not None, "Inferred chi not available before solving QCQP dual"
-
-        P = self.QCQP.A2 @ self.QCQP.current_xstar  # Calculate polarization current
-        Es = self.QCQP.current_xstar
+        
+        if self.sparseQCQP:
+            P = self.QCQP.A2 @ self.QCQP.current_xstar  # Calculate polarization current
+            Es = self.QCQP.current_xstar
+        else:
+            P = self.QCQP.current_xstar
+            Es = self.G @ P
+        
         Etotal = self.get_ei()[self.des_mask] + Es
         return P / Etotal
 
