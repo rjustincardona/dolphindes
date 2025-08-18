@@ -6,6 +6,35 @@ Optimizers
 __all__ = ["BFGS", "Alt_Newton_GD"]
 
 import numpy as np 
+import scipy.sparse.linalg as spla
+from scipy.interpolate import AAA
+def root_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-6, tol=1e-8):
+    z = x0
+    for _ in range(max_restart):
+        xs = [z]
+        fs = [f(z)]
+
+        xs.append(x0 - r * np.sign(fs[-1]))
+        fs.append(f(xs[-1]))
+        for iter in range(max_iter):
+            a = AAA(xs, fs)
+            z = np.max(np.real(a.roots()))
+            err = np.real(f(z))
+            # print(f"\troot_aaa: z = {z}, err = {err}")
+            if abs(err) < tol:
+                return z
+            xs.append(z)
+            fs.append(err)
+        z = xs[np.argmin(np.abs(np.array(fs)))]
+    return root_aaa(f, np.real(np.max(a.poles())) + 10, max_iter, max_restart, r, tol)
+
+def drop_rows_cols(A, rows=(), cols=()):
+    keep_r = np.ones(A.shape[0], dtype=bool)
+    keep_c = np.ones(A.shape[1], dtype=bool)
+    keep_r[rows] = False
+    keep_c[cols] = False
+    return A[np.ix_(keep_r, keep_c)]
+
 
 class _Optimizer():
     """Base class for optimization algorithms.
@@ -42,8 +71,16 @@ class _Optimizer():
 
     OPT_PARAMS_DEFAULTS = {'opttol': 1e-8, 'gradConverge': False, 'min_inner_iter': 5, 'max_restart': np.inf, 'penalty_ratio': 1e-2, 'penalty_reduction': 0.1, 'break_iter_period': 50, 'verbose': 0}
 
-    def __init__(self, optfunc, feasible_func, penalty_vector_func, is_convex, opt_params):
+    def __init__(self, optfunc, aU, _get_total_A, _get_total_S, _add_projectors, s1, _get_xstar, feasible_func, penalty_vector_func, is_convex, opt_params):
         self.optfunc = optfunc
+
+        self.aU = aU
+        self._get_total_A = _get_total_A
+        self._get_total_S = _get_total_S
+        self._add_projectors = _add_projectors
+        self.s1 = s1
+        self._get_xstar = _get_xstar
+
         self.feasible_func = feasible_func
         self.penalty_vector_func = penalty_vector_func
         
@@ -400,7 +437,7 @@ class Alt_Newton_GD(_Optimizer):
             penalty_vector, _ = self.penalty_vector_func(x0 + opt_step_size * xdir)
             penalty_value = self.optfunc(x0, get_grad=False, get_hess=False, penalty_vectors=[penalty_vector])[0] 
             epsS = np.sqrt(self.opt_params['penalty_ratio']*np.abs(opt_fx0 / penalty_value))
-            self.penalty_vector_list.append(epsS * penalty_vector)
+            # self.penalty_vector_list.append(epsS * penalty_vector)
 
         return opt_step_size
 
@@ -414,10 +451,26 @@ class Alt_Newton_GD(_Optimizer):
         self.prev_fx_outer = np.inf
         
         outer_iter_count = 1
+        def C(z, L):
+            x = L.copy()
+            x[1] = z
+            return self.optfunc(x, get_grad=True,get_hess=False, penalty_vectors=self.penalty_vector_list)[1][1].real
+        def root(x0):
+            x = x0.copy()
+            x[1] = 0
+            pole = -spla.eigs(self._get_total_A(x), M=self.aU, k=1, return_eigenvectors=False)[0].real
+            if pole < 0:
+                pole = -spla.eigs(self._get_total_A(x), M=self.aU, sigma=pole, k=1, return_eigenvectors=False)[0].real
+            rad = 1e-5
+            return root_aaa(lambda a: C(a, x), pole+rad, r = rad/10)
+
+        g = root(self.opt_x)
+        x0[1] = max(0, g)
 
         if self.verbose > 0:
             print(f"Starting optimization with x0 = {self.opt_x}")
 
+        iters = 0
         while True: # outer loop - penalty reduction
             self.penalty_vector_list = [] # reset penalty vectors
             last_N_step_size = last_GD_step_size = 1.0 # reset step sizes
@@ -428,6 +481,9 @@ class Alt_Newton_GD(_Optimizer):
                 print(f"Outer iteration {outer_iter_count}, penalty_ratio = {self.opt_params['penalty_ratio']}, opt_fx = {self.opt_fx}")
             
             while True:
+                iters += 1
+                g = root_aaa(lambda a: C(a, self.opt_x), g)
+                x0[1] = max(0, g)
                 
                 doN = (inner_iter_count % 2 == 1) # alternate between Newton and GD steps
                 self.opt_fx, self.xgrad, self.xhess, _ = self.optfunc(self.opt_x, get_grad=True,get_hess=doN, penalty_vectors=self.penalty_vector_list)
@@ -440,7 +496,11 @@ class Alt_Newton_GD(_Optimizer):
                 
                 # find step for next iteration
                 if doN:
-                    Ndir = np.linalg.solve(self.xhess, -self.xgrad)
+                    hessian = drop_rows_cols(self.xhess, rows=[1], cols=[1])
+                    gradient = np.concatenate(([self.xgrad[0]], self.xgrad[2:]))
+                    Ndir = np.linalg.solve(hessian, gradient)
+                    Ndir = np.insert(Ndir, 1, np.zeros(1))
+                    # Ndir = np.linalg.solve(self.xhess, -self.xgrad)
                     xdir = Ndir / np.linalg.norm(Ndir)
                     last_step_size = last_N_step_size
                     if self.verbose >= 2:
@@ -461,6 +521,7 @@ class Alt_Newton_GD(_Optimizer):
                     last_GD_step_size = last_step_size
                 
                 # move on to the next iteration
+                xdir[1] = 0
                 self.opt_x += opt_step_size * xdir
                 inner_iter_count += 1
             
@@ -470,5 +531,6 @@ class Alt_Newton_GD(_Optimizer):
             self.opt_params['penalty_ratio'] *= self.opt_params['penalty_reduction']
             outer_iter_count += 1
         
+        print(f"Optimization completed in {iters} iterations.")
         return self.opt_x, self.opt_fx, self.xgrad, self.xhess
         

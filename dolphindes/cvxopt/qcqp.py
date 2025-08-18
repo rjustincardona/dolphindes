@@ -414,7 +414,7 @@ class _SharedProjQCQP(ABC):
         penalty_vector_func = self._get_PSD_penalty
         
         if method == 'newton':
-            optimizer = Alt_Newton_GD(optfunc, feasibility_func, penalty_vector_func, is_convex, opt_params)
+            optimizer = Alt_Newton_GD(optfunc, self.precomputed_As[1], self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params)
         elif method == 'bfgs':
             optimizer = BFGS(optfunc, feasibility_func, penalty_vector_func, is_convex, opt_params)
         else: 
