@@ -102,7 +102,7 @@ ldos_problem.setup_QCQP(Pdiags = 'global', verbose=0) # verbose has a few levels
 
 
 ## iterative splitting
-method = 'newton'
+method = 'bfgs'
 ldos_problem.QCQP.solve_current_dual_problem(method=method)
 results = []
 result_counter = 0
