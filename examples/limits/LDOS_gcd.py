@@ -91,7 +91,7 @@ ldos_problem.set_objective(s0=s0_p, A0=A0_p, c0=vac_ldos, denseToSparse=True)
 
 
 # We are ready to set up the QCQP for calculating limits. We will use Pdiags = 'global': this represents two constraints (extinction and real power global conservation). We will show how to refine these constraints below, or you may pass Pdiags = 'local' to directly do the local problem (often slower).
-ldos_problem.setup_QCQP(Pdiags = 'global', verbose=0) # verbose has a few levels. 0 is silent, 1 is basic output, 2 is more verbose, 3 is very verbose.
+ldos_problem.setup_QCQP(Pdiags = 'global', verbose=5) # verbose has a few levels. 0 is silent, 1 is basic output, 2 is more verbose, 3 is very verbose.
 
 # # get a copy of the ldos_problem QCQP for testing and comparing with GCD
 # import copy

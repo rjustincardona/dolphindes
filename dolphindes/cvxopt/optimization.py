@@ -106,11 +106,30 @@ class _Optimizer():
         if pole < 0:
             pole = -spla.eigs(self._get_total_A(x), M=self.aU, sigma=pole, k=1, return_eigenvectors=False)[0].real
         rad = 1e-5
-        return root_aaa(lambda a: self.C(a, x), pole+rad, r = rad/10)
+        while True:
+            try:
+                result = root_aaa(lambda a: self.C(a, x), pole+rad, r = rad/10)
+                print(f'found root at {result} with pole {pole} and rad {rad}')
+                break
+            except:
+                print('root finding failed, retrying with smaller radius')
+                rad /= 10
+        x[1] = result
+
+        e = np.min(np.linalg.eigvals(self._get_total_A(x).todense()))
+        if e.real < -1e-4:
+            print(e)
+            print(np.min(np.linalg.eigvals(self.aU.todense())))
+            input("...")
+        return result
     
     def update_x0(self, x0, xdir):
-        self.g = self.root(x0)
         result = x0 + xdir
+        self.g = self.root(x0)
+        # try:
+        #     self.g = root_aaa(lambda a: self.C(a, x0+xdir), self.g)
+        # except:
+        #     self.g = self.root(x0)
         result[1] = max(0, self.g)
         return result
     
@@ -156,6 +175,8 @@ class _Optimizer():
             if self.feasible_func(x_temp):
                 if self.verbose >= 3: print(f"Feasible point found at alpha = {alpha}, x_temp = {x_temp}")
                 break
+            else:
+                if self.verbose >= 3: print(f"Point not feasible at alpha = {alpha}, reducing step size")
             alpha *= c_reduct
         alpha_opt = alpha
         alpha_feas = alpha
@@ -327,7 +348,7 @@ class BFGS(_Optimizer):
                 penalty_vector, _ = self.penalty_vector_func(x0 + opt_step_size * dir)
                 penalty_value = self.optfunc(x0, get_grad=False, get_hess=False, penalty_vectors=[penalty_vector])[0] 
                 epsS = np.sqrt(self.opt_params['penalty_ratio']*np.abs(opt_fx0 / penalty_value))
-                self.penalty_vector_list.append(epsS * penalty_vector)
+                # self.penalty_vector_list.append(epsS * penalty_vector)
 
                 return opt_step_size, True
             return opt_step_size, False
@@ -344,6 +365,11 @@ class BFGS(_Optimizer):
         if self.verbose > 0:
             print(f"Starting optimization with x0 = {self.opt_x}")
 
+        iters = 0    
+
+        self.g = self.root(self.opt_x)
+        x0[1] = max(0, self.g)
+
         while True: # outer loop - penalty reduction
             self.penalty_vector_list = [] # reset penalty vectors
             self.opt_fx, self.xgrad, _, __ = self.optfunc(self.opt_x, get_grad=True, get_hess=False)
@@ -358,6 +384,7 @@ class BFGS(_Optimizer):
 
             while True:
                 inner_iter_count += 1
+                iters += 1
 
                 if self.verbose > 1:
                     print(f"Inner iteration {inner_iter_count}, opt_fx = {self.opt_fx}")
@@ -393,6 +420,7 @@ class BFGS(_Optimizer):
             outer_iter_count += 1
             self.opt_params['penalty_ratio'] *= self.opt_params['penalty_reduction']
             
+        print(f"Optimization completed in {iters} iterations.")
         return self.opt_x, self.opt_fx, self.xgrad, None
 
 
