@@ -5,10 +5,30 @@ Optimizers
 
 __all__ = ["BFGS", "Alt_Newton_GD"]
 
-import numpy as np 
+import numpy as np
 import scipy.sparse.linalg as spla
 from scipy.interpolate import AAA
-def root_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-6, tol=1e-8):
+import matplotlib.pyplot as plt
+
+def bisect(f, a, b, max_iter=50, tol=1e-8):
+    fa = f(a)
+    fb = f(b)
+    if fa * fb > 0:
+        raise ValueError        
+    for _ in range(max_iter):
+        c = (a + b) / 2
+        fc = f(c)
+        if abs(fc) < tol or (b - a) / 2 < tol:
+            return c
+        if fa * fc < 0:
+            b = c
+            fb = fc
+        else:
+            a = c
+            fa = fc
+    return (a + b) / 2
+
+def root_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-6, tol=1e-8, verbose=False):
     z = x0
     for _ in range(max_restart):
         xs = [z]
@@ -18,16 +38,27 @@ def root_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-6, tol=1e-8):
         fs.append(f(xs[-1]))
         for iter in range(max_iter):
             a = AAA(xs, fs)
-            z = np.max(np.real(a.roots()))
+            try:
+                z = np.max(np.real(a.roots()))
+            except ValueError:
+                # print(xs, fs)
+                raise ValueError
             err = np.real(f(z))
-            # print(f"\troot_aaa: z = {z}, err = {err}")
+            # if verbose:
+            #     print(f"\troot_aaa: z = {z}, err = {err}")
             if abs(err) < tol:
                 return z
             xs.append(z)
             fs.append(err)
         z = xs[np.argmin(np.abs(np.array(fs)))]
-    return root_aaa(f, np.real(np.max(a.poles())) + 10, max_iter, max_restart, r, tol)
-
+    # print("trying further away", xs, fs)
+    # input()
+    # if verbose:
+    #     x_plot = np.linspace(0, x0+10, 10000)
+    #     y_plot = [f(a) for a in x_plot]
+    #     plt.plot(x_plot, y_plot)
+    #     plt.show()
+    return root_aaa(f, np.real(np.max(a.poles())) + 10, max_iter, max_restart, r, tol, verbose=verbose)
 
 class _Optimizer():
     """Base class for optimization algorithms.
@@ -90,11 +121,6 @@ class _Optimizer():
         self.opt_fx = None
         self.verbose = self.opt_params['verbose']
 
-    def get_last_opt(self):
-        """Get the last optimized x and f(x) values."""
-        return self.opt_x, self.opt_fx
-    
-
     def C(self, z, L):
             x = L.copy()
             x[1] = z
@@ -105,33 +131,28 @@ class _Optimizer():
         pole = -spla.eigs(self._get_total_A(x), M=self.aU, k=1, return_eigenvectors=False)[0].real
         if pole < 0:
             pole = -spla.eigs(self._get_total_A(x), M=self.aU, sigma=pole, k=1, return_eigenvectors=False)[0].real
+
+        tol=1e-14
+        # if self.C(pole, x) > 0:
+        #     print(np.min(np.linalg.eigvals(self.aU.todense())))
+        #     input()
+
         rad = 1e-5
         while True:
             try:
-                result = root_aaa(lambda a: self.C(a, x), pole+rad, r = rad/10)
-                print(f'found root at {result} with pole {pole} and rad {rad}')
-                break
-            except:
-                print('root finding failed, retrying with smaller radius')
+                return root_aaa(lambda a: self.C(a, x), pole-rad, r=rad/10)
+            except ValueError:
+                # print("its flat here")
+                # input()
                 rad /= 10
-        x[1] = result
-
-        e = np.min(np.linalg.eigvals(self._get_total_A(x).todense()))
-        if e.real < -1e-4:
-            print(e)
-            print(np.min(np.linalg.eigvals(self.aU.todense())))
-            input("...")
-        return result
-    
-    def update_x0(self, x0, xdir):
-        result = x0 + xdir
-        self.g = self.root(x0)
         # try:
-        #     self.g = root_aaa(lambda a: self.C(a, x0+xdir), self.g)
+        #     return root_aaa(lambda a: self.C(a, x), pole+rad, r=rad/10)
         # except:
-        #     self.g = self.root(x0)
-        result[1] = max(0, self.g)
-        return result
+        #     return bisect(lambda a: self.C(a, x), pole, 2 * pole)
+
+    def get_last_opt(self):
+        """Get the last optimized x and f(x) values."""
+        return self.opt_x, self.opt_fx
     
     def _line_search(self, dir : np.ndarray, x0 : np.ndarray, fx0 : np.ndarray, grad : np.ndarray, init_step_size : float) -> float:
         """This method implements a two-phase backtracking line search:
@@ -170,13 +191,7 @@ class _Optimizer():
         alpha = alpha_start = init_step_size
 
         if self.verbose >= 3: print(f"\nStarting line search with parameters alpha_start = {alpha_start}, alpha = {alpha}")
-        while True:
-            x_temp = self.update_x0(x0, alpha * dir)
-            if self.feasible_func(x_temp):
-                if self.verbose >= 3: print(f"Feasible point found at alpha = {alpha}, x_temp = {x_temp}")
-                break
-            else:
-                if self.verbose >= 3: print(f"Point not feasible at alpha = {alpha}, reducing step size")
+        while not self.feasible_func(x0 + alpha * dir):
             alpha *= c_reduct
         alpha_opt = alpha
         alpha_feas = alpha
@@ -186,8 +201,7 @@ class _Optimizer():
         opt_val = np.inf
         grad_direction = dir @ grad
         while True:
-            x_temp = self.update_x0(x0, alpha * dir)
-            tmp_value, _, _, _ = self.optfunc(x_temp, get_grad=False, get_hess=False, penalty_vectors=self.penalty_vector_list)
+            tmp_value, _, _, _ = self.optfunc(x0 + alpha*dir, get_grad=False, get_hess=False, penalty_vectors=self.penalty_vector_list)
             if self.verbose>=3:
                 print('backtracking tmp_value', tmp_value)
             if tmp_value < opt_val: #the dual is still decreasing as we backtrack, continue
@@ -348,79 +362,72 @@ class BFGS(_Optimizer):
                 penalty_vector, _ = self.penalty_vector_func(x0 + opt_step_size * dir)
                 penalty_value = self.optfunc(x0, get_grad=False, get_hess=False, penalty_vectors=[penalty_vector])[0] 
                 epsS = np.sqrt(self.opt_params['penalty_ratio']*np.abs(opt_fx0 / penalty_value))
-                # self.penalty_vector_list.append(epsS * penalty_vector)
+                self.penalty_vector_list.append(epsS * penalty_vector)
 
                 return opt_step_size, True
             return opt_step_size, False
 
     def run(self, x0, tol=None):
-        self.opt_x = x0
-        self.ndof = self.opt_x.size
-        self.xgrad = np.zeros(self.ndof)
-        self.prev_fx = np.inf
-        self.prev_fx_outer = np.inf
+        self.opt_x = x0.copy()
+        self.g = self.root(x0)
+        self.opt_x[1] = max(0, self.g)
+        self.ndof = x0.size
+        Hinv = np.eye(self.ndof)
+        close_enough = False
+        back_tol = 1e-5# * np.power(10, -np.log(self.ndof))
+        fxs = []
+        while True:
+            # Calculate step direction
+            self.opt_fx, self.xgrad, _, _ = self.optfunc(self.opt_x, get_grad=True, get_hess=False)
+            fxs.append(self.opt_fx)
+            if len(fxs) > 4:
+                fxs.pop(0)            
+            if (len(fxs) > 3) and np.abs(np.mean(fxs) - self.opt_fx) < 1e-1 * np.power(10, -np.log(self.ndof)):
+                break
+            self.xgrad[1] = 0
+            # print(f"Dual: {self.opt_fx}, Grad: {np.linalg.norm(self.xgrad)}")
+            hessian = np.vstack((Hinv[0], Hinv[2:]))
+            hessian = np.vstack((hessian.T[0], hessian.T[2:])).T
+            gradient = np.concatenate(([self.xgrad[0]], self.xgrad[2:]))
+            if np.linalg.norm(gradient) < 1e-1:
+                break
+            Ndir = -hessian @ gradient
+            BFGS_dir = np.insert(Ndir, 1, np.zeros(1))
+            nBFGS_dir = BFGS_dir / np.linalg.norm(BFGS_dir)
 
-        outer_iter_count = 0
-
-        if self.verbose > 0:
-            print(f"Starting optimization with x0 = {self.opt_x}")
-
-        iters = 0    
-
-        self.g = self.root(self.opt_x)
-        x0[1] = max(0, self.g)
-
-        while True: # outer loop - penalty reduction
-            self.penalty_vector_list = [] # reset penalty vectors
-            self.opt_fx, self.xgrad, _, __ = self.optfunc(self.opt_x, get_grad=True, get_hess=False)
-
-            last_step_size = 1.0 
-            Hinv = np.eye(self.ndof)
-
-            inner_iter_count = 0 
-            
-            if self.verbose > 0:
-                print(f"Outer iteration {outer_iter_count}, penalty_ratio = {self.opt_params['penalty_ratio']}, opt_fx = {self.opt_fx}")
-
+            # Line search to find optimal step size
+            alpha = 1e-1
             while True:
-                inner_iter_count += 1
-                iters += 1
+                x_temp = self.opt_x + alpha * nBFGS_dir
+                x_temp[1] = 0
+                g = self.root(x_temp)
+                x_temp[1] = max(0, g)
+                fx_new, new_grad, _, _ = self.optfunc(x_temp, get_grad=True, get_hess=False, penalty_vectors=self.penalty_vector_list)
+                new_grad[1] = 0
+                if fx_new < self.opt_fx:
+                    old_grad = self.xgrad.copy()
+                    self.opt_x = x_temp
+                    self.g = g
+                    self.xgrad = new_grad
+                    self.opt_fx = fx_new
+                    # print(self.opt_fx, self.g, self.opt_x, self.xgrad)
+                    # if self.opt_fx < 0:
+                    #     print(self.opt_fx)
+                    #     print(x_temp, self.root(x_temp))
+                    #     print(self.opt_x, self.root(self.opt_x))
+                        # input()
+                    break
+                # print(f"\tBacktracking, {fx_new} < {self.opt_fx}")
+                alpha *= 0.1
+                if alpha < back_tol:
+                    close_enough = True
+                    break
+            if close_enough:
+                break
 
-                if self.verbose > 1:
-                    print(f"Inner iteration {inner_iter_count}, opt_fx = {self.opt_fx}")
+            # Update Hessian inverse approximation
+            Hinv = self._update_Hinv(Hinv, self.xgrad, old_grad, nBFGS_dir, reset=False) 
 
-                
-                # hessian = np.vstack((Hinv[0], Hinv[2:]))
-                # hessian = np.vstack((hessian.T[0], hessian.T[2:])).T
-                # gradient = np.concatenate(([self.xgrad[0]], self.xgrad[2:]))
-                # Ndir = np.linalg.solve(hessian, gradient)
-                # BFGS_dir = np.insert(Ndir, 1, np.zeros(1))
-                BFGS_dir = - Hinv @ self.xgrad
-                nBFGS_dir = BFGS_dir / np.linalg.norm(BFGS_dir)
-
-                opt_step_size, feas_step_size = self._line_search(nBFGS_dir, self.opt_x, self.opt_fx, self.xgrad, last_step_size) # Perform line search for step size 
-                last_step_size, added_penalty = self._add_penalty(opt_step_size, last_step_size, feas_step_size, self.opt_x, nBFGS_dir, self.opt_fx) 
-
-                delta = opt_step_size * nBFGS_dir
-                old_grad = self.xgrad.copy()  # Save old gradient before update
-                self.opt_x = self.update_x0(self.opt_x, delta)
-                # self.opt_x += delta
-
-                new_opt_fx, new_grad, _, __ = self.optfunc(self.opt_x, get_grad=True, get_hess=False, penalty_vectors=self.penalty_vector_list) # Get new function value and gradient
-
-                Hinv = self._update_Hinv(Hinv, new_grad, old_grad, delta, reset=added_penalty) # Update Hessian inverse. If added_penalty, will reset.
-                self.opt_fx = new_opt_fx
-                self.xgrad = new_grad
-
-                if self._break_condition(inner_iter_count, 'inner'): break 
-
-            if self._break_condition(outer_iter_count, 'outer'): break 
-            self.prev_fx_outer = self.opt_fx
-
-            outer_iter_count += 1
-            self.opt_params['penalty_ratio'] *= self.opt_params['penalty_reduction']
-            
-        print(f"Optimization completed in {iters} iterations.")
         return self.opt_x, self.opt_fx, self.xgrad, None
 
 
@@ -493,7 +500,6 @@ class Alt_Newton_GD(_Optimizer):
             self.penalty_vector_list.append(epsS * penalty_vector)
 
         return opt_step_size
-    
 
     
     def run(self, x0):
@@ -505,14 +511,10 @@ class Alt_Newton_GD(_Optimizer):
         self.prev_fx_outer = np.inf
         
         outer_iter_count = 1
-        
-        self.g = self.root(self.opt_x)
-        x0[1] = max(0, self.g)
 
         if self.verbose > 0:
             print(f"Starting optimization with x0 = {self.opt_x}")
 
-        iters = 0
         while True: # outer loop - penalty reduction
             self.penalty_vector_list = [] # reset penalty vectors
             last_N_step_size = last_GD_step_size = 1.0 # reset step sizes
@@ -523,7 +525,6 @@ class Alt_Newton_GD(_Optimizer):
                 print(f"Outer iteration {outer_iter_count}, penalty_ratio = {self.opt_params['penalty_ratio']}, opt_fx = {self.opt_fx}")
             
             while True:
-                iters += 1
                 
                 doN = (inner_iter_count % 2 == 1) # alternate between Newton and GD steps
                 self.opt_fx, self.xgrad, self.xhess, _ = self.optfunc(self.opt_x, get_grad=True,get_hess=doN, penalty_vectors=self.penalty_vector_list)
@@ -536,11 +537,6 @@ class Alt_Newton_GD(_Optimizer):
                 
                 # find step for next iteration
                 if doN:
-                    # hessian = np.vstack((self.xhess[0], self.xhess[2:]))
-                    # hessian = np.vstack((hessian.T[0], hessian.T[2:])).T
-                    # gradient = np.concatenate(([self.xgrad[0]], self.xgrad[2:]))
-                    # Ndir = np.linalg.solve(hessian, gradient)
-                    # Ndir = np.insert(Ndir, 1, np.zeros(1))
                     Ndir = np.linalg.solve(self.xhess, -self.xgrad)
                     xdir = Ndir / np.linalg.norm(Ndir)
                     last_step_size = last_N_step_size
@@ -550,7 +546,6 @@ class Alt_Newton_GD(_Optimizer):
                 else:
                     if self.verbose >= 2:
                         print("doing GD step")
-                    # xdir[1] = 0
                     xdir = -self.xgrad / np.linalg.norm(self.xgrad)
                     last_step_size = last_GD_step_size
                 
@@ -563,7 +558,7 @@ class Alt_Newton_GD(_Optimizer):
                     last_GD_step_size = last_step_size
                 
                 # move on to the next iteration
-                self.opt_x = self.update_x0(self.opt_x, opt_step_size * xdir)
+                self.opt_x += opt_step_size * xdir
                 inner_iter_count += 1
             
             # outer iteration check convergence, reduce penalties, and update iter count
@@ -572,6 +567,5 @@ class Alt_Newton_GD(_Optimizer):
             self.opt_params['penalty_ratio'] *= self.opt_params['penalty_reduction']
             outer_iter_count += 1
         
-        print(f"Optimization completed in {iters} iterations.")
         return self.opt_x, self.opt_fx, self.xgrad, self.xhess
         

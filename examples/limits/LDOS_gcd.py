@@ -19,7 +19,7 @@ import scipy.sparse as sp
 import matplotlib.pyplot as plt
 import sys, time, os
 
-package_path = os.path.abspath('../dolphindes')
+package_path = os.path.abspath('../dolphindes-new')
 if package_path not in sys.path:
     sys.path.append(package_path)
 
@@ -91,53 +91,53 @@ ldos_problem.set_objective(s0=s0_p, A0=A0_p, c0=vac_ldos, denseToSparse=True)
 
 
 # We are ready to set up the QCQP for calculating limits. We will use Pdiags = 'global': this represents two constraints (extinction and real power global conservation). We will show how to refine these constraints below, or you may pass Pdiags = 'local' to directly do the local problem (often slower).
-ldos_problem.setup_QCQP(Pdiags = 'global', verbose=5) # verbose has a few levels. 0 is silent, 1 is basic output, 2 is more verbose, 3 is very verbose.
+ldos_problem.setup_QCQP(Pdiags = 'global', verbose=0) # verbose has a few levels. 0 is silent, 1 is basic output, 2 is more verbose, 3 is very verbose.
 
 # # get a copy of the ldos_problem QCQP for testing and comparing with GCD
-# import copy
-# gcd_QCQP = copy.deepcopy(ldos_problem.QCQP)
+import copy
+gcd_QCQP = copy.deepcopy(ldos_problem.QCQP)
 
 
 # In[6]:
 
 
 ## iterative splitting
-method = 'bfgs'
-ldos_problem.QCQP.solve_current_dual_problem(method=method)
-results = []
-result_counter = 0
-t = time.time()
-for result in ldos_problem.QCQP.iterative_splitting_step(method=method): # When we reach pixel level constraints, the generator will return and stop this loop.
-    result_counter += 1
-    num_constr = ldos_problem.QCQP.get_number_constraints()
-    print(f'at step {result_counter}, number of constraints is {num_constr}, bound is {result[0]}')
-
-    results.append((num_constr, result[0]))
-print(f'Newton iterative splitting took {time.time()-t}s to reach pixel level.')
-
-
-# # In[7]:
-
-
-# ### now compare with tightening the bounds using GCD
-
-# ## gcd parameters, play around and see how the result changes
-
-# # maximum number of QCQP constraints before merging, larger values may lead to tighter final bounds but makes GCD slower
-# max_cstrt_num = 10
-
-# # maximum number of GCD iterations
-# max_gcd_iter_num = 50
-
-# # check to see how much the bound improved after gcd_iter_period number of GCD iterations
-# gcd_iter_period = 5
-
-# # relative tolerance for required minimum improvement of bounds or GCD terminates
-# gcd_tol = 1e-2
-
+# method = 'bfgs'
+# ldos_problem.QCQP.solve_current_dual_problem(method=method)
+# results = []
+# result_counter = 0
 # t = time.time()
+# for result in ldos_problem.QCQP.iterative_splitting_step(method=method): # When we reach pixel level constraints, the generator will return and stop this loop.
+#     result_counter += 1
+#     num_constr = ldos_problem.QCQP.get_number_constraints()
+#     print(f'at step {result_counter}, number of constraints is {num_constr}, bound is {result[0]}')
 
-# gcd_QCQP.run_gcd(max_cstrt_num=max_cstrt_num, max_gcd_iter_num=max_gcd_iter_num,
-#                  gcd_iter_period=gcd_iter_period, gcd_tol=gcd_tol)
-# print(f'gcd took time {time.time()-t} to reach {gcd_QCQP.current_dual/ldos_problem.QCQP.current_dual} of pixel dual.')
+#     results.append((num_constr, result[0]))
+# print(f'Newton iterative splitting took {time.time()-t}s to reach pixel level.')
+
+
+# In[7]:
+
+
+### now compare with tightening the bounds using GCD
+
+## gcd parameters, play around and see how the result changes
+
+# maximum number of QCQP constraints before merging, larger values may lead to tighter final bounds but makes GCD slower
+max_cstrt_num = 10
+
+# maximum number of GCD iterations
+max_gcd_iter_num = 50
+
+# check to see how much the bound improved after gcd_iter_period number of GCD iterations
+gcd_iter_period = 5
+
+# relative tolerance for required minimum improvement of bounds or GCD terminates
+gcd_tol = 1e-2
+
+t = time.time()
+
+gcd_QCQP.run_gcd(max_cstrt_num=max_cstrt_num, max_gcd_iter_num=max_gcd_iter_num,
+                 gcd_iter_period=gcd_iter_period, gcd_tol=gcd_tol)
+print(f'gcd took time {time.time()-t} to reach {gcd_QCQP.current_dual} at pixel dual.')
 

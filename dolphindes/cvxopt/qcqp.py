@@ -319,13 +319,6 @@ class _SharedProjQCQP(ABC):
             Ftot = Fx + self.Fs
             hess = 2*np.real(Ftot.conj().T @ self._Acho_solve(Ftot))
 
-            # Cg = hess[1, 1]
-            # for i in range(grad.shape[0]):
-            #     grad[i] -= hess[1, i] * grad[1] / Cg
-            # for i in range(hess.shape[0]):
-            #     for j in range(hess.shape[1]):
-            #         hess[i, j] -= hess[1, i] * hess[1, j] / Cg
-
         elif get_grad: # This is grad_lambda (not grad_x); elif since get_hess automatically computes grad
             # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))). Second term: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
             # self.Pdiags has shape (N_diag, N_projectors), A2_xstar has shape (N_diag,)
@@ -421,12 +414,13 @@ class _SharedProjQCQP(ABC):
         penalty_vector_func = self._get_PSD_penalty
         
         if method == 'newton':
-            optimizer = Alt_Newton_GD(optfunc, self.precomputed_As[1], self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params)
+            optimizer = Alt_Newton_GD(optfunc, feasibility_func, penalty_vector_func, is_convex, opt_params)
         elif method == 'bfgs':
             optimizer = BFGS(optfunc, self.precomputed_As[1], self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params)
         else: 
             raise ValueError(f"Unknown method '{method}' for solving the dual problem. Use newton or bfgs.")
         
+
         self.current_lags, self.current_dual, self.current_grad, self.current_hess = optimizer.run(init_lags)
         self.current_xstar, _ = self._get_xstar(self.current_lags)
 
@@ -1112,7 +1106,7 @@ def run_gcd(QCQP: _SharedProjQCQP,
     while True:
         gcd_iter_num += 1
         # solve current dual problem
-        QCQP.solve_current_dual_problem('newton', init_lags=QCQP.current_lags, opt_params=opt_params)
+        QCQP.solve_current_dual_problem('bfgs', init_lags=QCQP.current_lags, opt_params=opt_params)
         print(f'At GCD iteration #{gcd_iter_num}, best dual bound found is {QCQP.current_dual}.')
         
         ## termination conditions
@@ -1139,5 +1133,6 @@ def run_gcd(QCQP: _SharedProjQCQP,
         # informally checked that new constraints are added in orthonormal fashion
     
         ## merge old constraints if necessary
-        if QCQP.Pdiags.shape[1] > max_cstrt_num:
-            QCQP.merge_lead_constraints(merged_num = QCQP.Pdiags.shape[1]-max_cstrt_num+1)
+        # if QCQP.Pdiags.shape[1] > max_cstrt_num:
+        #     QCQP.merge_lead_constraints(merged_num = QCQP.Pdiags.shape[1]-max_cstrt_num+1)
+        
