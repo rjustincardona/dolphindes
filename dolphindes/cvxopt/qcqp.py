@@ -205,13 +205,13 @@ class _SharedProjQCQP(ABC):
             return self.current_lags
         
         init_lags = np.random.random(self.Pdiags.shape[1]) * 1e-6  # Start with small positive lags
-        init_lags[1] = start
-        while self.is_dual_feasible(init_lags) is False:
-            init_lags[1] *= 1.5
-            if init_lags[1] > limit:
-                raise ValueError("Could not find a feasible point for the dual problem.")
+        # init_lags[1] = start
+        # while self.is_dual_feasible(init_lags) is False:
+        #     init_lags[1] *= 1.5
+        #     if init_lags[1] > limit:
+        #         raise ValueError("Could not find a feasible point for the dual problem.")
             
-        if self.verbose > 0: print(f"Found feasible point for dual problem: {init_lags} with dualvalue {self.get_dual(init_lags)[0]}")
+        # if self.verbose > 0: print(f"Found feasible point for dual problem: {init_lags} with dualvalue {self.get_dual(init_lags)[0]}")
         return init_lags
     
     def _get_PSD_penalty(self, lags: np.ndarray) -> Tuple[np.ndarray, float]:
@@ -259,9 +259,10 @@ class _SharedProjQCQP(ABC):
         P_diag = self._add_projectors(lags)
         A = self._get_total_A(lags)
         S = self._get_total_S(P_diag)
-        self._update_Acho(A) # update the Cholesky factorization
+        # self._update_Acho(A) # update the Cholesky factorization
         
-        x_star = self._Acho_solve(S)
+        # x_star = self._Acho_solve(S)
+        x_star = spla.spsolve(A, S)
         xAx = np.real(x_star.conjugate() @ A @ x_star)
 
         return x_star, xAx

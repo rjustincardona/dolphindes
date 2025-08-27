@@ -10,7 +10,7 @@ import scipy.sparse.linalg as spla
 from scipy.interpolate import AAA
 import matplotlib.pyplot as plt
 
-def bisect(f, a, b, max_iter=50, tol=1e-8):
+def bisect(f, a, b, max_iter=50, tol=1e-4):
     fa = f(a)
     fb = f(b)
     if fa * fb > 0:
@@ -31,7 +31,7 @@ def bisect(f, a, b, max_iter=50, tol=1e-8):
     print(it)
     return (a + b) / 2
 
-def root_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-6, tol=1e-8, verbose=False):
+def root_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-2, tol=1e-4, verbose=False):
     z = x0
     for _ in range(max_restart):
         xs = [z]
@@ -382,7 +382,7 @@ class BFGS(_Optimizer):
         close_enough = False
         back_tol = 1e-5
         fxs = []
-        alpha = 1
+        alpha = 1e-3
         iters = 0
         while True:
             iters += 1
@@ -411,11 +411,11 @@ class BFGS(_Optimizer):
                 back_iter += 1
                 x_temp = self.opt_x + alpha * nBFGS_dir
                 x_temp[1] = 0
-                g = self.root(x_temp)
-                # try:
-                #     g = root_aaa(lambda a: self.C(a, x_temp), self.g)
-                # except ValueError:
-                #     g = self.root(x_temp)
+                # g = self.root(x_temp)
+                try:
+                    g = root_aaa(lambda a: self.C(a, x_temp), self.g)
+                except ValueError:
+                    g = self.root(x_temp)
                 x_temp[1] = max(0, g)
                 fx_new, new_grad, _, _ = self.optfunc(x_temp, get_grad=True, get_hess=False, penalty_vectors=self.penalty_vector_list)
                 new_grad[1] = 0
