@@ -133,7 +133,7 @@ max_gcd_iter_num = 50
 gcd_iter_period = 5
 
 # relative tolerance for required minimum improvement of bounds or GCD terminates
-gcd_tol = 1e-2
+gcd_tol = 1e-1
 
 t = time.time()
 

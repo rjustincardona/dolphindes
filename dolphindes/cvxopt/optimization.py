@@ -14,8 +14,10 @@ def bisect(f, a, b, max_iter=50, tol=1e-8):
     fa = f(a)
     fb = f(b)
     if fa * fb > 0:
+        if fb < 0:
+            return bisect(f, a, 2*b, max_iter, tol)
         raise ValueError        
-    for _ in range(max_iter):
+    for it in range(max_iter):
         c = (a + b) / 2
         fc = f(c)
         if abs(fc) < tol or (b - a) / 2 < tol:
@@ -26,6 +28,7 @@ def bisect(f, a, b, max_iter=50, tol=1e-8):
         else:
             a = c
             fa = fc
+    print(it)
     return (a + b) / 2
 
 def root_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-6, tol=1e-8, verbose=False):
@@ -138,13 +141,16 @@ class _Optimizer():
         #     input()
 
         rad = 1e-5
-        while True:
-            try:
-                return root_aaa(lambda a: self.C(a, x), pole-rad, r=rad/10)
-            except ValueError:
-                # print("its flat here")
-                # input()
-                rad /= 10
+        try:
+            return bisect(lambda a: self.C(a, x), pole, 2 * pole)
+        except ValueError:
+            while True:
+                try:
+                    return root_aaa(lambda a: self.C(a, x), pole-rad, r=rad/10)
+                except ValueError:
+                    # print("its flat here")
+                    # input()
+                    rad /= 10
         # try:
         #     return root_aaa(lambda a: self.C(a, x), pole+rad, r=rad/10)
         # except:
@@ -400,13 +406,22 @@ class BFGS(_Optimizer):
             nBFGS_dir = BFGS_dir / np.linalg.norm(BFGS_dir)
 
             # Line search to find optimal step size
+            back_iter = 0
             while True:
+                back_iter += 1
                 x_temp = self.opt_x + alpha * nBFGS_dir
                 x_temp[1] = 0
                 g = self.root(x_temp)
+                # try:
+                #     g = root_aaa(lambda a: self.C(a, x_temp), self.g)
+                # except ValueError:
+                #     g = self.root(x_temp)
                 x_temp[1] = max(0, g)
                 fx_new, new_grad, _, _ = self.optfunc(x_temp, get_grad=True, get_hess=False, penalty_vectors=self.penalty_vector_list)
                 new_grad[1] = 0
+                if np.linalg.norm(g - self.g) > 1e-1:
+                    alpha *= 0.1
+                    continue
                 if fx_new < self.opt_fx:
                     old_grad = self.xgrad.copy()
                     self.opt_x = x_temp
@@ -425,13 +440,14 @@ class BFGS(_Optimizer):
                 if alpha < back_tol:
                     close_enough = True
                     break
+            # print(f"back iter: {back_iter}")
             if close_enough:
                 break
 
             # Update Hessian inverse approximation
             Hinv = self._update_Hinv(Hinv, self.xgrad, old_grad, nBFGS_dir, reset=False) 
 
-        print(f"Converged in {iters} iters.")
+        # print(f"Converged in {iters} iters.")
         return self.opt_x, self.opt_fx, self.xgrad, None
 
 
