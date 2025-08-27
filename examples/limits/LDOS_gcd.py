@@ -19,7 +19,7 @@ import scipy.sparse as sp
 import matplotlib.pyplot as plt
 import sys, time, os
 
-package_path = os.path.abspath('../dolphindes-new')
+package_path = os.path.abspath('../dolphindes')
 if package_path not in sys.path:
     sys.path.append(package_path)
 

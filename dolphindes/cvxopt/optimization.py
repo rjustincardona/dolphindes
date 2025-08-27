@@ -374,15 +374,19 @@ class BFGS(_Optimizer):
         self.ndof = x0.size
         Hinv = np.eye(self.ndof)
         close_enough = False
-        back_tol = 1e-5# * np.power(10, -np.log(self.ndof))
+        back_tol = 1e-5
         fxs = []
+        alpha = 1
+        iters = 0
         while True:
+            iters += 1
             # Calculate step direction
             self.opt_fx, self.xgrad, _, _ = self.optfunc(self.opt_x, get_grad=True, get_hess=False)
             fxs.append(self.opt_fx)
-            if len(fxs) > 4:
+            n = 4
+            if len(fxs) > n:
                 fxs.pop(0)            
-            if (len(fxs) > 3) and np.abs(np.mean(fxs) - self.opt_fx) < 1e-1 * np.power(10, -np.log(self.ndof)):
+            if (len(fxs) > n-1) and np.abs(np.mean(fxs) - self.opt_fx) < 5e-3:#1 * np.power(10, -np.log(self.ndof)):
                 break
             self.xgrad[1] = 0
             # print(f"Dual: {self.opt_fx}, Grad: {np.linalg.norm(self.xgrad)}")
@@ -396,7 +400,6 @@ class BFGS(_Optimizer):
             nBFGS_dir = BFGS_dir / np.linalg.norm(BFGS_dir)
 
             # Line search to find optimal step size
-            alpha = 1e-1
             while True:
                 x_temp = self.opt_x + alpha * nBFGS_dir
                 x_temp[1] = 0
@@ -428,6 +431,7 @@ class BFGS(_Optimizer):
             # Update Hessian inverse approximation
             Hinv = self._update_Hinv(Hinv, self.xgrad, old_grad, nBFGS_dir, reset=False) 
 
+        print(f"Converged in {iters} iters.")
         return self.opt_x, self.opt_fx, self.xgrad, None
 
 
