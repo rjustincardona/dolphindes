@@ -417,12 +417,17 @@ class _SharedProjQCQP(ABC):
         if method == 'newton':
             optimizer = Alt_Newton_GD(optfunc, feasibility_func, penalty_vector_func, is_convex, opt_params)
         elif method == 'bfgs':
-            optimizer = BFGS(optfunc, self.precomputed_As[1], self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params)
+            # optimizer = BFGS(optfunc, self.precomputed_As[1], self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params)
+            try:
+                optimizer = BFGS(optfunc, self.precomputed_As[1], self.A1, self.A2, self.Pdiags, self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params, self.g, self.p)
+            except AttributeError:
+                optimizer = BFGS(optfunc, self.precomputed_As[1], self.A1, self.A2, self.Pdiags, self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params, None, None)
+# 
         else: 
             raise ValueError(f"Unknown method '{method}' for solving the dual problem. Use newton or bfgs.")
         
 
-        self.current_lags, self.current_dual, self.current_grad, self.current_hess = optimizer.run(init_lags)
+        self.current_lags, self.current_dual, self.current_grad, self.current_hess, self.g, self.p = optimizer.run(init_lags)
         self.current_xstar, _ = self._get_xstar(self.current_lags)
 
         return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
@@ -955,37 +960,42 @@ def merge_lead_constraints(QCQP: _SharedProjQCQP, merged_num: int = 2) -> None:
     if cstrt_num < merged_num:
         raise ValueError("Number of constraints insufficient for size of merge.")
     
-    new_Pdiags = np.zeros((x_size,cstrt_num-merged_num+1), dtype=complex)
-    new_lags = np.zeros(cstrt_num-merged_num+1, dtype=float)
-    new_Pdiags[:,0] = QCQP.Pdiags[:,:merged_num] @ QCQP.current_lags[:merged_num]
+    new_Pdiags = np.zeros((x_size,cstrt_num-merged_num+3), dtype=complex)
+    new_lags = np.zeros(cstrt_num-merged_num+3, dtype=float)
+    new_Pdiags[:,:2] = QCQP.Pdiags[:,:2]
+    new_lags[:2] = QCQP.current_lags[:2]
+    new_Pdiags[:,2] = QCQP.Pdiags[:,2:merged_num] @ QCQP.current_lags[2:merged_num]
     
     # normalize merged Pdiag
-    Pnorm = la.norm(new_Pdiags[:,0])
-    new_Pdiags[:,0] /= Pnorm
-    new_lags[0] = Pnorm
+    Pnorm = la.norm(new_Pdiags[:,2])
+    new_Pdiags[:,2] /= Pnorm
+    new_lags[2] = Pnorm
     
     # put other constraints in
-    new_Pdiags[:,1:] = QCQP.Pdiags[:,merged_num:]
-    new_lags[1:] = QCQP.current_lags[merged_num:]
+    new_Pdiags[:,3:] = QCQP.Pdiags[:,merged_num:]
+    new_lags[3:] = QCQP.current_lags[merged_num:]
     
     # update QCQP
     if hasattr(QCQP, 'precomputed_As'):
         # updated precomputed_As
         QCQP.precomputed_As[merged_num-1] *= QCQP.current_lags[merged_num-1]
-        for i in range(merged_num-1):
+        for i in range(2,merged_num-1):
             QCQP.precomputed_As[merged_num-1] += QCQP.precomputed_As[i] * QCQP.current_lags[i]
         QCQP.precomputed_As[merged_num-1] /= Pnorm
-        del QCQP.precomputed_As[:merged_num-1]
+        del QCQP.precomputed_As[2:merged_num-1]
     
     if hasattr(QCQP, 'Fs'):
-        new_Fs = np.zeros((x_size,cstrt_num-merged_num+1), dtype=complex)
-        new_Fs[:,0] = QCQP.A2.conj().T @ (new_Pdiags[:,0].conj() * QCQP.s1)
-        new_Fs[:,1:] = QCQP.Fs[:,merged_num:]
+        new_Fs = np.zeros((x_size,cstrt_num-merged_num+3), dtype=complex)
+        new_Fs[:,:2] = QCQP.Fs[:,:2]
+        new_Fs[:,2] = QCQP.A2.conj().T @ (new_Pdiags[:,2].conj() * QCQP.s1)
+        new_Fs[:,3:] = QCQP.Fs[:,merged_num:]
         QCQP.Fs = new_Fs
     
     QCQP.Pdiags = new_Pdiags
     QCQP.current_lags = new_lags
     QCQP.current_grad = QCQP.current_hess = None # in principle can merge dual derivatives but leave it undone for now
+    # print(QCQP.current_lags)
+    # input()
 
 def add_constraints(QCQP: _SharedProjQCQP, added_Pdiag_list: list, orthonormalize: bool = True) -> None:
     """
@@ -1124,6 +1134,7 @@ def run_gcd(QCQP: _SharedProjQCQP,
         ## generate min A eig constraint
         minAeigv, minAeigw = QCQP._get_PSD_penalty(QCQP.current_lags)
         minAeig_Pdiag = (QCQP.A1.conj().T @ minAeigv) * (QCQP.A2 @ minAeigv).conj()
+
         # use the same relative weights for minAeig_Pdiag as maxViol_Pdiag
         minAeig_Pdiag /= np.sqrt(np.real(minAeig_Pdiag.conj() * minAeig_Pdiag))
         minAeig_Pdiag * np.sqrt(np.real(maxViol_Pdiag.conj() * maxViol_Pdiag))
@@ -1134,6 +1145,6 @@ def run_gcd(QCQP: _SharedProjQCQP,
         # informally checked that new constraints are added in orthonormal fashion
     
         ## merge old constraints if necessary
-        # if QCQP.Pdiags.shape[1] > max_cstrt_num:
-        #     QCQP.merge_lead_constraints(merged_num = QCQP.Pdiags.shape[1]-max_cstrt_num+1)
+        if QCQP.Pdiags.shape[1] > max_cstrt_num:
+            QCQP.merge_lead_constraints(merged_num = QCQP.Pdiags.shape[1]-max_cstrt_num+1)
         

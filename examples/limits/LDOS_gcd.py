@@ -34,7 +34,7 @@ from dolphindes import photonics
 wavelength = 1.0 # Dolphindes uses dimensionless units. 
 omega = 2 * np.pi / wavelength
 chi = 4+1e-4j # Design material 
-px_per_length = 16 # pixels per length unit. If wavelength = 1.0, then this is pixels per wavelength.
+px_per_length = 40 # pixels per length unit. If wavelength = 1.0, then this is pixels per wavelength.
 dl = 1/px_per_length 
 Npmlsep = int(0.5 / dl) # gap between design region and PML. Not required to be defined, it is just convenient.
 Npmlx, Npmly = int(0.5 / dl), int(0.5 / dl) # PML size.
@@ -133,11 +133,15 @@ max_gcd_iter_num = 50
 gcd_iter_period = 5
 
 # relative tolerance for required minimum improvement of bounds or GCD terminates
-gcd_tol = 1e-1
+gcd_tol = 1e-2
 
 t = time.time()
 
 gcd_QCQP.run_gcd(max_cstrt_num=max_cstrt_num, max_gcd_iter_num=max_gcd_iter_num,
                  gcd_iter_period=gcd_iter_period, gcd_tol=gcd_tol)
 print(f'gcd took time {time.time()-t} to reach {gcd_QCQP.current_dual} at pixel dual.')
+
+# n = int(np.sqrt(gcd_QCQP.current_xstar.shape[0]))
+# plt.imshow(np.reshape(gcd_QCQP.current_xstar, (n, n)).real)
+# plt.show()
 

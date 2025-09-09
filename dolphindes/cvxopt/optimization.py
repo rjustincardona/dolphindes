@@ -15,7 +15,9 @@ def bisect(f, a, b, max_iter=50, tol=1e-4):
     fb = f(b)
     if fa * fb > 0:
         if fb < 0:
-            return bisect(f, a, 2*b, max_iter, tol)
+            # print(f"trying again at a={b} and b={2*b}, {fb}")
+            # input()
+            return bisect(f, b, 2*b, max_iter, tol)
         raise ValueError        
     for it in range(max_iter):
         c = (a + b) / 2
@@ -50,7 +52,7 @@ def root_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-2, tol=1e-4, verbose=Fal
             # if verbose:
             #     print(f"\troot_aaa: z = {z}, err = {err}")
             if abs(err) < tol:
-                return z
+                return z, np.max(np.real(a.poles()))
             xs.append(z)
             fs.append(err)
         z = xs[np.argmin(np.abs(np.array(fs)))]
@@ -63,6 +65,18 @@ def root_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-2, tol=1e-4, verbose=Fal
     #     plt.show()
     return root_aaa(f, np.real(np.max(a.poles())) + 10, max_iter, max_restart, r, tol, verbose=verbose)
 
+def pole_aaa(f, start, end, n=10):
+    xs = np.linspace(start, end, n)
+    fs = [f(x) for x in xs]
+    a = AAA(xs, fs)
+    return np.max(np.real(a.poles())).real
+
+# def pole_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-2, tol=1e-4, verbose=False):
+#         z = x0
+#         xs = np.linspace(z-r, z+r, 5)
+#         fs = [f(x) for x in xs]
+#         a = AAA(xs, fs)
+#         return np.max(np.real(a.poles())).real
 class _Optimizer():
     """Base class for optimization algorithms.
     This abstract class provides a foundation for implementing various optimization
@@ -98,15 +112,20 @@ class _Optimizer():
 
     OPT_PARAMS_DEFAULTS = {'opttol': 1e-8, 'gradConverge': False, 'min_inner_iter': 5, 'max_restart': np.inf, 'penalty_ratio': 1e-2, 'penalty_reduction': 0.1, 'break_iter_period': 50, 'verbose': 0}
 
-    def __init__(self, optfunc, aU, _get_total_A, _get_total_S, _add_projectors, s1, _get_xstar, feasible_func, penalty_vector_func, is_convex, opt_params):
+    def __init__(self, optfunc, aU, A1, A2, Pdiags, _get_total_A, _get_total_S, _add_projectors, s1, _get_xstar, feasible_func, penalty_vector_func, is_convex, opt_params, g=None, p=None):
         self.optfunc = optfunc
 
         self.aU = aU
+        self.A1 = A1
+        self.A2 = A2
+        self.Pdiags = Pdiags
         self._get_total_A = _get_total_A
         self._get_total_S = _get_total_S
         self._add_projectors = _add_projectors
         self.s1 = s1
         self._get_xstar = _get_xstar
+        self.g=g
+        self.p=p
 
         self.feasible_func = feasible_func
         self.penalty_vector_func = penalty_vector_func
@@ -128,6 +147,17 @@ class _Optimizer():
             x = L.copy()
             x[1] = z
             return self.optfunc(x, get_grad=True,get_hess=False, penalty_vectors=self.penalty_vector_list)[1][1].real
+    def D(self, z, L):
+            x = L.copy()
+            x[1] = z
+            xstar, dualval = self._get_xstar(x)
+            A2_xstar = self.A2 @ xstar      # Shape: (N_p,)
+            x_conj_A1 = xstar.conj() @ self.A1  # Shape: (N_p,) where N_p = self.A1.shape[1]
+            term1 = -np.real( (x_conj_A1 * A2_xstar) @ self.Pdiags )
+
+            term2 = 2 * np.real( (A2_xstar.conj() * np.ones(self.s1.shape)) @ self.Pdiags.conj() )
+            grad = term1 + term2
+            return grad[1].real
     def root(self, x0):
         x = x0.copy()
         x[1] = 0
@@ -135,26 +165,15 @@ class _Optimizer():
         if pole < 0:
             pole = -spla.eigs(self._get_total_A(x), M=self.aU, sigma=pole, k=1, return_eigenvectors=False)[0].real
 
-        tol=1e-14
-        # if self.C(pole, x) > 0:
-        #     print(np.min(np.linalg.eigvals(self.aU.todense())))
-        #     input()
-
         rad = 1e-5
         try:
-            return bisect(lambda a: self.C(a, x), pole, 2 * pole)
+            return bisect(lambda a: self.C(a, x), pole, 2 * pole), pole
         except ValueError:
             while True:
                 try:
-                    return root_aaa(lambda a: self.C(a, x), pole-rad, r=rad/10)
+                    return root_aaa(lambda a: self.C(a, x), pole-rad, r=rad/10)[0], pole
                 except ValueError:
-                    # print("its flat here")
-                    # input()
                     rad /= 10
-        # try:
-        #     return root_aaa(lambda a: self.C(a, x), pole+rad, r=rad/10)
-        # except:
-        #     return bisect(lambda a: self.C(a, x), pole, 2 * pole)
 
     def get_last_opt(self):
         """Get the last optimized x and f(x) values."""
@@ -374,8 +393,24 @@ class BFGS(_Optimizer):
             return opt_step_size, False
 
     def run(self, x0, tol=None):
+        # gs = []
+        # gs_r = []
+        # ps = []
+        # ps_r = []
         self.opt_x = x0.copy()
-        self.g = self.root(x0)
+        if self.g is None:
+            self.g, self.p = self.root(x0)
+
+        # x_plot = np.linspace(self.g-1e-1, self.g+1e-1, 1000)
+        # c_plot = [self.C(a, self.opt_x) for a in x_plot]
+        # d_plot = [self.D(a, self.opt_x) for a in x_plot]
+        # plt.plot(x_plot, c_plot, label='C')
+        # plt.plot(x_plot, d_plot, label='D')
+        # plt.legend()
+        # plt.show()
+
+        # p_fake = pole_aaa(lambda a: self.D(a, x0), self.p+1, self.g+1, 10)
+        self.opt_x[1] = 0
         self.opt_x[1] = max(0, self.g)
         self.ndof = x0.size
         Hinv = np.eye(self.ndof)
@@ -385,6 +420,11 @@ class BFGS(_Optimizer):
         alpha = 1e-3
         iters = 0
         while True:
+            # gs.append(self.g)
+            # test = self.root(self.opt_x)
+            # gs_r.append(test[0])
+            # ps.append(self.p)
+            # ps_r.append(test[1])
             iters += 1
             # Calculate step direction
             self.opt_fx, self.xgrad, _, _ = self.optfunc(self.opt_x, get_grad=True, get_hess=False)
@@ -392,14 +432,14 @@ class BFGS(_Optimizer):
             n = 4
             if len(fxs) > n:
                 fxs.pop(0)            
-            if (len(fxs) > n-1) and np.abs(np.mean(fxs) - self.opt_fx) < 5e-3:#1 * np.power(10, -np.log(self.ndof)):
+            if (len(fxs) > n-1) and np.abs(np.mean(fxs) - self.opt_fx) < 5e-3:
                 break
             self.xgrad[1] = 0
             # print(f"Dual: {self.opt_fx}, Grad: {np.linalg.norm(self.xgrad)}")
             hessian = np.vstack((Hinv[0], Hinv[2:]))
             hessian = np.vstack((hessian.T[0], hessian.T[2:])).T
             gradient = np.concatenate(([self.xgrad[0]], self.xgrad[2:]))
-            if np.linalg.norm(gradient) < 1e-1:
+            if np.linalg.norm(gradient) < 1e-2:
                 break
             Ndir = -hessian @ gradient
             BFGS_dir = np.insert(Ndir, 1, np.zeros(1))
@@ -411,29 +451,46 @@ class BFGS(_Optimizer):
                 back_iter += 1
                 x_temp = self.opt_x + alpha * nBFGS_dir
                 x_temp[1] = 0
-                # g = self.root(x_temp)
+
+                # if iters <= 1:
+                #     g, p = self.root(x_temp)
+                # else:
                 try:
-                    g = root_aaa(lambda a: self.C(a, x_temp), self.g)
+                    g, p = root_aaa(lambda a: self.C(a, x_temp), self.g)
+                    # p_fake = pole_aaa(lambda a: self.D(a, x_temp), self.p+1, self.g+1)
+
+                    if g - self.g < -1e-1:#(g < self.g and p > self.p) or (g > self.g and p < self.p) or (g < p_fake):
+                        # raise ValueError
+                        alpha *= 0.1
+                        continue
                 except ValueError:
-                    g = self.root(x_temp)
+                    g, p = self.root(x_temp)
                 x_temp[1] = max(0, g)
+                # e = np.min(np.linalg.eigvals(self._get_total_A(x_temp).todense()).real)
+                # if e < -1e-5:
+                #     print(f"Warning: non-convex step encountered with min eigval {e}")
+                #     plt.scatter(range(len(gs)+1), gs+[g], label='zeros', color='red')
+                #     plt.scatter(range(len(gs)+1), ps+[p], label="poles", color='orange')
+                #     plt.hlines(p_fake, 0, len(gs)+1, label="fake pole", color='purple')
+                #     # g, p = self.root(x_temp)
+                #     g, p = root_aaa(lambda a: self.C(a, x_temp), p_fake)
+                #     x_temp[1] = max(0, g)
+                #     plt.scatter(range(len(gs)+1), gs_r+[g], label="real zeros", color='blue')
+                #     plt.scatter(range(len(gs)+1), ps_r+[p], label="real poles", color='green')
+                #     plt.title("Indefinite")
+                #     plt.legend()
+                #     plt.show()
                 fx_new, new_grad, _, _ = self.optfunc(x_temp, get_grad=True, get_hess=False, penalty_vectors=self.penalty_vector_list)
                 new_grad[1] = 0
-                if np.linalg.norm(g - self.g) > 1e-1:
-                    alpha *= 0.1
-                    continue
                 if fx_new < self.opt_fx:
                     old_grad = self.xgrad.copy()
                     self.opt_x = x_temp
                     self.g = g
+                    self.p = p
                     self.xgrad = new_grad
                     self.opt_fx = fx_new
-                    # print(self.opt_fx, self.g, self.opt_x, self.xgrad)
-                    # if self.opt_fx < 0:
-                    #     print(self.opt_fx)
-                    #     print(x_temp, self.root(x_temp))
-                    #     print(self.opt_x, self.root(self.opt_x))
-                        # input()
+                    
+
                     break
                 # print(f"\tBacktracking, {fx_new} < {self.opt_fx}")
                 alpha *= 0.1
@@ -445,10 +502,16 @@ class BFGS(_Optimizer):
                 break
 
             # Update Hessian inverse approximation
-            Hinv = self._update_Hinv(Hinv, self.xgrad, old_grad, nBFGS_dir, reset=False) 
-
-        # print(f"Converged in {iters} iters.")
-        return self.opt_x, self.opt_fx, self.xgrad, None
+            Hinv = self._update_Hinv(Hinv, self.xgrad, old_grad, nBFGS_dir, reset=False)
+        
+        # plt.scatter(range(len(gs)), gs, label='zeros', color='red')
+        # plt.scatter(range(len(gs)), gs_r, label="real zeros", color='blue')
+        # plt.scatter(range(len(gs)), ps, label="poles", color='orange')
+        # plt.scatter(range(len(gs)), ps_r, label="real poles", color='green')
+        # plt.title("Positive Definite")
+        # plt.legend()
+        # plt.show()
+        return self.opt_x, self.opt_fx, self.xgrad, None, self.g, self.p
 
 
 class Alt_Newton_GD(_Optimizer):
