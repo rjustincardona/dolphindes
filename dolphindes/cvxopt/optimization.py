@@ -52,7 +52,7 @@ def root_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-2, tol=1e-4, verbose=Fal
             # if verbose:
             #     print(f"\troot_aaa: z = {z}, err = {err}")
             if abs(err) < tol:
-                return z, np.max(np.real(a.poles()))
+                return z#, np.max(np.real(a.poles()))
             xs.append(z)
             fs.append(err)
         z = xs[np.argmin(np.abs(np.array(fs)))]
@@ -167,11 +167,11 @@ class _Optimizer():
 
         rad = 1e-5
         try:
-            return bisect(lambda a: self.C(a, x), pole, 2 * pole), pole
+            return bisect(lambda a: self.C(a, x), pole, 2 * pole)
         except ValueError:
             while True:
                 try:
-                    return root_aaa(lambda a: self.C(a, x), pole-rad, r=rad/10)[0], pole
+                    return root_aaa(lambda a: self.C(a, x), pole-rad, r=rad/10)[0]
                 except ValueError:
                     rad /= 10
 
@@ -392,126 +392,80 @@ class BFGS(_Optimizer):
                 return opt_step_size, True
             return opt_step_size, False
 
-    def run(self, x0, tol=None):
-        # gs = []
-        # gs_r = []
-        # ps = []
-        # ps_r = []
-        self.opt_x = x0.copy()
-        if self.g is None:
-            self.g, self.p = self.root(x0)
+    def run(self, x_init, g_init=None, alpha_init = 1e-3, alpha_min=1e-5, grad_tol=1e1):
+        # Initialize in PD region
+        if g_init is None:
+            g_init = self.root(x_init)
+        x_init[1] = max(0, g_init)
+        
+        # Initialize history
+        alpha = [alpha_init]
+        g = [g_init]
+        x = [x_init]
+        dual = []
+        grad = []
+        hess = []
+        ndir = []
+        dual_init, grad_init, _, _ = self.optfunc(x_init, get_grad=True, get_hess=False)
+        grad_init[1] = 0
+        hess_init = np.eye(x_init.size)
+        ndir_init = grad_init / np.linalg.norm(grad_init)
+        dual.append(dual_init)
+        grad.append(grad_init)
+        hess.append(hess_init)
+        ndir.append(ndir_init)
 
-        # x_plot = np.linspace(self.g-1e-1, self.g+1e-1, 1000)
-        # c_plot = [self.C(a, self.opt_x) for a in x_plot]
-        # d_plot = [self.D(a, self.opt_x) for a in x_plot]
-        # plt.plot(x_plot, c_plot, label='C')
-        # plt.plot(x_plot, d_plot, label='D')
-        # plt.legend()
-        # plt.show()
-
-        # p_fake = pole_aaa(lambda a: self.D(a, x0), self.p+1, self.g+1, 10)
-        self.opt_x[1] = 0
-        self.opt_x[1] = max(0, self.g)
-        self.ndof = x0.size
-        Hinv = np.eye(self.ndof)
-        close_enough = False
-        back_tol = 1e-5
-        fxs = []
-        alpha = 1e-3
         iters = 0
         while True:
-            # gs.append(self.g)
-            # test = self.root(self.opt_x)
-            # gs_r.append(test[0])
-            # ps.append(self.p)
-            # ps_r.append(test[1])
             iters += 1
-            # Calculate step direction
-            self.opt_fx, self.xgrad, _, _ = self.optfunc(self.opt_x, get_grad=True, get_hess=False)
-            fxs.append(self.opt_fx)
-            n = 4
-            if len(fxs) > n:
-                fxs.pop(0)            
-            if (len(fxs) > n-1) and np.abs(np.mean(fxs) - self.opt_fx) < 5e-3:
-                break
-            self.xgrad[1] = 0
-            # print(f"Dual: {self.opt_fx}, Grad: {np.linalg.norm(self.xgrad)}")
-            hessian = np.vstack((Hinv[0], Hinv[2:]))
-            hessian = np.vstack((hessian.T[0], hessian.T[2:])).T
-            gradient = np.concatenate(([self.xgrad[0]], self.xgrad[2:]))
-            if np.linalg.norm(gradient) < 1e-2:
-                break
-            Ndir = -hessian @ gradient
-            BFGS_dir = np.insert(Ndir, 1, np.zeros(1))
-            nBFGS_dir = BFGS_dir / np.linalg.norm(BFGS_dir)
 
-            # Line search to find optimal step size
-            back_iter = 0
+            # Determine step
+            iters_back = 0
+            alpha_new = alpha[-1]
             while True:
-                back_iter += 1
-                x_temp = self.opt_x + alpha * nBFGS_dir
-                x_temp[1] = 0
+                iters_back += 1
 
-                # if iters <= 1:
-                #     g, p = self.root(x_temp)
-                # else:
-                try:
-                    g, p = root_aaa(lambda a: self.C(a, x_temp), self.g)
-                    # p_fake = pole_aaa(lambda a: self.D(a, x_temp), self.p+1, self.g+1)
+                # Propose new x
+                x_new = x[-1] + alpha_new * ndir[-1]
+                g_new = self.root(x_new)
+                # try:
+                #     g_new = root_aaa(lambda z: self.C(z, x_new), g[-1])
+                # except ValueError:
+                #     g_new = self.root(x_new)
+                x_new[1] = max(0, g_new)
 
-                    if g - self.g < -1e-1:#(g < self.g and p > self.p) or (g > self.g and p < self.p) or (g < p_fake):
-                        # raise ValueError
-                        alpha *= 0.1
-                        continue
-                except ValueError:
-                    g, p = self.root(x_temp)
-                x_temp[1] = max(0, g)
-                # e = np.min(np.linalg.eigvals(self._get_total_A(x_temp).todense()).real)
-                # if e < -1e-5:
-                #     print(f"Warning: non-convex step encountered with min eigval {e}")
-                #     plt.scatter(range(len(gs)+1), gs+[g], label='zeros', color='red')
-                #     plt.scatter(range(len(gs)+1), ps+[p], label="poles", color='orange')
-                #     plt.hlines(p_fake, 0, len(gs)+1, label="fake pole", color='purple')
-                #     # g, p = self.root(x_temp)
-                #     g, p = root_aaa(lambda a: self.C(a, x_temp), p_fake)
-                #     x_temp[1] = max(0, g)
-                #     plt.scatter(range(len(gs)+1), gs_r+[g], label="real zeros", color='blue')
-                #     plt.scatter(range(len(gs)+1), ps_r+[p], label="real poles", color='green')
-                #     plt.title("Indefinite")
-                #     plt.legend()
-                #     plt.show()
-                fx_new, new_grad, _, _ = self.optfunc(x_temp, get_grad=True, get_hess=False, penalty_vectors=self.penalty_vector_list)
-                new_grad[1] = 0
-                if fx_new < self.opt_fx:
-                    old_grad = self.xgrad.copy()
-                    self.opt_x = x_temp
-                    self.g = g
-                    self.p = p
-                    self.xgrad = new_grad
-                    self.opt_fx = fx_new
-                    
+                # Get state at new x
+                dual_new, grad_new, _, _ = self.optfunc(x_new, get_grad=True, get_hess=False)
+                grad_new[1] = 0
+                hess_new = self._update_Hinv(hess[-1], grad_new, grad[-1], ndir[-1], reset=False)
+                hess_small = np.vstack((hess_new[0], hess_new[2:]))
+                hess_small = np.vstack((hess_new.T[0], hess_new.T[2:])).T
+                grad_small = np.concatenate(([grad_new[0]], grad_new[2:]))
+                ndir_new = -hess_small @ grad_small
+                ndir_new = ndir_new / np.linalg.norm(ndir_new)
 
-                    break
-                # print(f"\tBacktracking, {fx_new} < {self.opt_fx}")
-                alpha *= 0.1
-                if alpha < back_tol:
-                    close_enough = True
-                    break
-            # print(f"back iter: {back_iter}")
-            if close_enough:
+                # Validate new state
+                if alpha_new < alpha_min:
+                    alpha_new = alpha_init
+                elif dual_new > dual[-1]:
+                    alpha_new *= 1e-1
+                    continue
+
+                # Choose new parameters
+                if iters_back == 1:
+                    alpha_new *= 1e1
+                alpha.append(alpha_new)
+                g.append(g_new)
+                x.append(x_new)
+                dual.append(dual_new)
+                grad.append(grad_new)
+                hess.append(hess_new)
+                ndir.append(ndir_new)
                 break
-
-            # Update Hessian inverse approximation
-            Hinv = self._update_Hinv(Hinv, self.xgrad, old_grad, nBFGS_dir, reset=False)
         
-        # plt.scatter(range(len(gs)), gs, label='zeros', color='red')
-        # plt.scatter(range(len(gs)), gs_r, label="real zeros", color='blue')
-        # plt.scatter(range(len(gs)), ps, label="poles", color='orange')
-        # plt.scatter(range(len(gs)), ps_r, label="real poles", color='green')
-        # plt.title("Positive Definite")
-        # plt.legend()
-        # plt.show()
-        return self.opt_x, self.opt_fx, self.xgrad, None, self.g, self.p
+            # Check convergence
+            if np.linalg.norm(grad[-1]) < grad_tol:
+                return x[-1], dual[-1], grad[-1], None, self.g, None
 
 
 class Alt_Newton_GD(_Optimizer):
