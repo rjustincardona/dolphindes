@@ -8,6 +8,7 @@ __all__ = ["BFGS", "Alt_Newton_GD"]
 import numpy as np
 import scipy.sparse.linalg as spla
 from scipy.interpolate import AAA
+from numpy.linalg import norm
 import matplotlib.pyplot as plt
 
 def bisect(f, a, b, max_iter=50, tol=1e-4):
@@ -112,7 +113,7 @@ class _Optimizer():
 
     OPT_PARAMS_DEFAULTS = {'opttol': 1e-8, 'gradConverge': False, 'min_inner_iter': 5, 'max_restart': np.inf, 'penalty_ratio': 1e-2, 'penalty_reduction': 0.1, 'break_iter_period': 50, 'verbose': 0}
 
-    def __init__(self, optfunc, aU, A1, A2, Pdiags, _get_total_A, _get_total_S, _add_projectors, s1, _get_xstar, feasible_func, penalty_vector_func, is_convex, opt_params, g=None, p=None):
+    def __init__(self, optfunc, aU, A1, A2, Pdiags, _get_total_A, _get_total_S, _add_projectors, s1, _get_xstar, feasible_func, penalty_vector_func, is_convex, opt_params, g=None, a=None):
         self.optfunc = optfunc
 
         self.aU = aU
@@ -125,7 +126,7 @@ class _Optimizer():
         self.s1 = s1
         self._get_xstar = _get_xstar
         self.g=g
-        self.p=p
+        self.a=a
 
         self.feasible_func = feasible_func
         self.penalty_vector_func = penalty_vector_func
@@ -286,7 +287,7 @@ class BFGS(_Optimizer):
                 remaining_descent = np.abs(self.opt_x) @ np.abs(self.xgrad)
                 gradConverge = self.opt_params['gradConverge']
                 
-                if gradConverge  and np.abs(function_value - fminus_xxgrad)< opttol * np.abs(fminus_xxgrad) and np.abs(remaining_descent)< opttol * np.abs(fminus_xxgrad) and np.linalg.norm(self.xgrad) < opttol * np.abs(function_value): 
+                if gradConverge  and np.abs(function_value - fminus_xxgrad)< opttol * np.abs(fminus_xxgrad) and np.abs(remaining_descent)< opttol * np.abs(fminus_xxgrad) and norm(self.xgrad) < opttol * np.abs(function_value): 
                     return True 
 
                 elif (not gradConverge) and np.abs(function_value-fminus_xxgrad) < opttol*np.abs(fminus_xxgrad) and np.abs(remaining_descent)<opttol*np.abs(fminus_xxgrad):
@@ -392,7 +393,7 @@ class BFGS(_Optimizer):
                 return opt_step_size, True
             return opt_step_size, False
 
-    def run(self, x_init, g_init=None, alpha_init = 1e-3, alpha_min=1e-5, grad_tol=1e1):
+    def run(self, x_init, g_init=None, alpha_init = 1e-5, alpha_min=1e-7, grad_tol=1e-1, stable_n=5, stable_tol=1e-3):
         # Initialize in PD region
         if g_init is None:
             g_init = self.root(x_init)
@@ -409,29 +410,54 @@ class BFGS(_Optimizer):
         dual_init, grad_init, _, _ = self.optfunc(x_init, get_grad=True, get_hess=False)
         grad_init[1] = 0
         hess_init = np.eye(x_init.size)
-        ndir_init = grad_init / np.linalg.norm(grad_init)
+        ndir_init = grad_init / norm(grad_init)
         dual.append(dual_init)
         grad.append(grad_init)
         hess.append(hess_init)
         ndir.append(ndir_init)
 
         iters = 0
+        reverting = False
+        force_power_iter = 0
         while True:
             iters += 1
+            alpha_new = alpha[-1]
+            
+            # Revert if needed
+            if reverting:
+                iters -= 1
+                g_true = self.root(x[-1])
+                if np.abs(g_true - g[-1]) < 1e-2:
+                    force_power_iter += 1
+                    reverting = False
+                else:
+                    if iters > 1:
+                        iters -= 1
+                        alpha.pop()
+                        g.pop()
+                        x.pop()
+                        dual.pop()
+                        grad.pop()
+                        hess.pop()
+                        ndir.pop()
+                        continue
+                    return self.run(x_init, g_init=g_true, alpha_init=alpha_min, alpha_min=alpha_min, grad_tol=grad_tol)
+            else:
+                force_power_iter = max(0, force_power_iter - 1)
 
             # Determine step
             iters_back = 0
-            alpha_new = alpha[-1]
             while True:
                 iters_back += 1
 
                 # Propose new x
                 x_new = x[-1] + alpha_new * ndir[-1]
-                g_new = self.root(x_new)
-                # try:
-                #     g_new = root_aaa(lambda z: self.C(z, x_new), g[-1])
-                # except ValueError:
-                #     g_new = self.root(x_new)
+                try:
+                    if force_power_iter > 0:
+                        raise ValueError("forcing power iteration.")
+                    g_new = root_aaa(lambda z: self.C(z, x_new), g[-1])
+                except ValueError:
+                    g_new = self.root(x_new)
                 x_new[1] = max(0, g_new)
 
                 # Get state at new x
@@ -442,14 +468,23 @@ class BFGS(_Optimizer):
                 hess_small = np.vstack((hess_new.T[0], hess_new.T[2:])).T
                 grad_small = np.concatenate(([grad_new[0]], grad_new[2:]))
                 ndir_new = -hess_small @ grad_small
-                ndir_new = ndir_new / np.linalg.norm(ndir_new)
+                ndir_new = ndir_new / norm(ndir_new)
+                print(f"\titer {iters}-{iters_back}-> dual: {dual_new:.4f}, grad: {norm(grad_new):.4f}, alpha: {alpha_new}, power {force_power_iter}")
 
                 # Validate new state
+                # e = np.min(np.linalg.eigvals(self._get_total_A(x_new).todense()).real)
+                # if e < 0:
+                #     print(f"\t\t Indefinite with lowest eigenvalue {e:.4f}")
                 if alpha_new < alpha_min:
                     alpha_new = alpha_init
                 elif dual_new > dual[-1]:
                     alpha_new *= 1e-1
                     continue
+                elif norm(grad_new) > norm(grad[-1]):
+                    if not force_power_iter:
+                        reverting = True
+                        break
+                
 
                 # Choose new parameters
                 if iters_back == 1:
@@ -464,8 +499,8 @@ class BFGS(_Optimizer):
                 break
         
             # Check convergence
-            if np.linalg.norm(grad[-1]) < grad_tol:
-                return x[-1], dual[-1], grad[-1], None, self.g, None
+            if norm(grad[-1]) < grad_tol or (iters > stable_n and np.abs(dual[-1] - np.mean(dual[-stable_n:-1])) < stable_tol):
+                return x[-1], dual[-1], grad[-1], None, g[-1], alpha[-1]
 
 
 class Alt_Newton_GD(_Optimizer):
@@ -492,9 +527,9 @@ class Alt_Newton_GD(_Optimizer):
                 gradConverge = self.opt_params['gradConverge']
                 
                 if self.verbose>=3:
-                    print(f"opt_fx: {self.opt_fx}, fminus_xxgrad: {fminus_xxgrad}, grad norm: {np.linalg.norm(self.xgrad)}")
+                    print(f"opt_fx: {self.opt_fx}, fminus_xxgrad: {fminus_xxgrad}, grad norm: {norm(self.xgrad)}")
                     
-                if gradConverge  and np.abs(function_value - fminus_xxgrad)< opttol * np.abs(fminus_xxgrad) and np.abs(remaining_descent)< opttol * np.abs(fminus_xxgrad) and np.linalg.norm(self.xgrad) < opttol * np.abs(function_value): 
+                if gradConverge  and np.abs(function_value - fminus_xxgrad)< opttol * np.abs(fminus_xxgrad) and np.abs(remaining_descent)< opttol * np.abs(fminus_xxgrad) and norm(self.xgrad) < opttol * np.abs(function_value): 
                     return True 
 
                 elif (not gradConverge) and np.abs(function_value-fminus_xxgrad) < opttol*np.abs(fminus_xxgrad) and np.abs(remaining_descent)<opttol*np.abs(fminus_xxgrad):
@@ -575,7 +610,7 @@ class Alt_Newton_GD(_Optimizer):
                 # find step for next iteration
                 if doN:
                     Ndir = np.linalg.solve(self.xhess, -self.xgrad)
-                    xdir = Ndir / np.linalg.norm(Ndir)
+                    xdir = Ndir / norm(Ndir)
                     last_step_size = last_N_step_size
                     if self.verbose >= 2:
                         print("doing Newton step")
@@ -583,7 +618,7 @@ class Alt_Newton_GD(_Optimizer):
                 else:
                     if self.verbose >= 2:
                         print("doing GD step")
-                    xdir = -self.xgrad / np.linalg.norm(self.xgrad)
+                    xdir = -self.xgrad / norm(self.xgrad)
                     last_step_size = last_GD_step_size
                 
                 opt_step_size, feas_step_size = self._line_search(xdir, self.opt_x, self.opt_fx, self.xgrad, last_step_size)

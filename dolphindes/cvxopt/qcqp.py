@@ -419,15 +419,15 @@ class _SharedProjQCQP(ABC):
         elif method == 'bfgs':
             # optimizer = BFGS(optfunc, self.precomputed_As[1], self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params)
             try:
-                optimizer = BFGS(optfunc, self.precomputed_As[1], self.A1, self.A2, self.Pdiags, self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params, self.g, self.p)
-            except AttributeError:
-                optimizer = BFGS(optfunc, self.precomputed_As[1], self.A1, self.A2, self.Pdiags, self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params, None, None)
+                optimizer = BFGS(optfunc, self.precomputed_As[1], self.A1, self.A2, self.Pdiags, self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params, self.g, self.a)
+            except Exception as e:
+                optimizer = BFGS(optfunc, self.precomputed_As[1], self.A1, self.A2, self.Pdiags, self._get_total_A, self._get_total_S, self._add_projectors, self.s1, self._get_xstar, feasibility_func, penalty_vector_func, is_convex, opt_params, None, 1e-5)
 # 
         else: 
             raise ValueError(f"Unknown method '{method}' for solving the dual problem. Use newton or bfgs.")
         
 
-        self.current_lags, self.current_dual, self.current_grad, self.current_hess, self.g, self.p = optimizer.run(init_lags)
+        self.current_lags, self.current_dual, self.current_grad, self.current_hess, self.g, self.a = optimizer.run(init_lags, g_init=optimizer.g, alpha_init=optimizer.a/10)
         self.current_xstar, _ = self._get_xstar(self.current_lags)
 
         return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
@@ -1118,7 +1118,7 @@ def run_gcd(QCQP: _SharedProjQCQP,
         gcd_iter_num += 1
         # solve current dual problem
         QCQP.solve_current_dual_problem('bfgs', init_lags=QCQP.current_lags, opt_params=opt_params)
-        print(f'At GCD iteration #{gcd_iter_num}, best dual bound found is {QCQP.current_dual}.')
+        print(f'At GCD iteration #{gcd_iter_num}, best dual bound found is {QCQP.current_dual:4f}.')
         
         ## termination conditions
         if gcd_iter_num > max_gcd_iter_num:
