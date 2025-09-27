@@ -318,7 +318,8 @@ class _SharedProjQCQP(ABC):
             grad = np.real(xstar.conj() @ (Fx + 2*self.Fs)) #get_hess implies get_grad also
             
             Ftot = Fx + self.Fs
-            hess = 2*np.real(Ftot.conj().T @ self._Acho_solve(Ftot))
+            hess = 2*np.real(Ftot.conj().T @ spla.spsolve(self._get_total_A(lags), Ftot))
+            # hess = 2*np.real(Ftot.conj().T @ self._Acho_solve(Ftot))
 
         elif get_grad: # This is grad_lambda (not grad_x); elif since get_hess automatically computes grad
             # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))). Second term: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
@@ -374,7 +375,7 @@ class _SharedProjQCQP(ABC):
         else:
             return dualval, grad, hess, dual_aux
 
-    def solve_current_dual_problem(self, method: str, opt_params: dict = None, init_lags: np.ndarray = None) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def solve_current_dual_problem(self, method: str, opt_params: dict = None, init_lags: np.ndarray = None, num=None) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Solves the current dual problem using the specified method.
 
@@ -427,7 +428,7 @@ class _SharedProjQCQP(ABC):
             raise ValueError(f"Unknown method '{method}' for solving the dual problem. Use newton or bfgs.")
         
 
-        self.current_lags, self.current_dual, self.current_grad, self.current_hess, self.g, self.a = optimizer.run(init_lags, g_init=optimizer.g, alpha_init=optimizer.a/10)
+        self.current_lags, self.current_dual, self.current_grad, self.current_hess, self.g, self.a = optimizer.run(init_lags, g_init=optimizer.g, alpha_init=optimizer.a/10, num=num)
         self.current_xstar, _ = self._get_xstar(self.current_lags)
 
         return self.current_dual, self.current_lags, self.current_grad, self.current_hess, self.current_xstar
@@ -1117,7 +1118,7 @@ def run_gcd(QCQP: _SharedProjQCQP,
     while True:
         gcd_iter_num += 1
         # solve current dual problem
-        QCQP.solve_current_dual_problem('bfgs', init_lags=QCQP.current_lags, opt_params=opt_params)
+        QCQP.solve_current_dual_problem('bfgs', init_lags=QCQP.current_lags, opt_params=opt_params, num=gcd_iter_num)
         print(f'At GCD iteration #{gcd_iter_num}, best dual bound found is {QCQP.current_dual:4f}.')
         
         ## termination conditions

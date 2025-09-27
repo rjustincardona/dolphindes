@@ -47,24 +47,16 @@ def root_aaa(f, x0, max_iter=10, max_restart=10, r = 1e-2, tol=1e-4, verbose=Fal
             try:
                 z = np.max(np.real(a.roots()))
             except ValueError:
-                # print(xs, fs)
                 raise ValueError
             err = np.real(f(z))
-            # if verbose:
-            #     print(f"\troot_aaa: z = {z}, err = {err}")
             if abs(err) < tol:
-                return z#, np.max(np.real(a.poles()))
+                if z > np.max(np.real(a.poles())):
+                    return z
+                raise ValueError
             xs.append(z)
             fs.append(err)
         z = xs[np.argmin(np.abs(np.array(fs)))]
-    # print("trying further away", xs, fs)
-    # input()
-    # if verbose:
-    #     x_plot = np.linspace(0, x0+10, 10000)
-    #     y_plot = [f(a) for a in x_plot]
-    #     plt.plot(x_plot, y_plot)
-    #     plt.show()
-    return root_aaa(f, np.real(np.max(a.poles())) + 10, max_iter, max_restart, r, tol, verbose=verbose)
+    raise ValueError
 
 def pole_aaa(f, start, end, n=10):
     xs = np.linspace(start, end, n)
@@ -393,7 +385,7 @@ class BFGS(_Optimizer):
                 return opt_step_size, True
             return opt_step_size, False
 
-    def run(self, x_init, g_init=None, alpha_init = 1e-5, alpha_min=1e-7, grad_tol=1e-1, stable_n=5, stable_tol=1e-3):
+    def run(self, x_init, g_init=None, alpha_init=1e-5, alpha_min=1e-7, grad_tol=1e-1, n_conv=10, conv_tol=1e-3, num=None):
         # Initialize in PD region
         if g_init is None:
             g_init = self.root(x_init)
@@ -407,6 +399,7 @@ class BFGS(_Optimizer):
         grad = []
         hess = []
         ndir = []
+        back = []
         dual_init, grad_init, _, _ = self.optfunc(x_init, get_grad=True, get_hess=False)
         grad_init[1] = 0
         hess_init = np.eye(x_init.size)
@@ -415,36 +408,46 @@ class BFGS(_Optimizer):
         grad.append(grad_init)
         hess.append(hess_init)
         ndir.append(ndir_init)
+        back.append(0)
 
         iters = 0
-        reverting = False
-        force_power_iter = 0
+        force_power_iter = False
+        ignore_problem = False
+        revert = False
         while True:
             iters += 1
-            alpha_new = alpha[-1]
             
-            # Revert if needed
-            if reverting:
+            # Revert if necessary
+            if revert:
                 iters -= 1
-                g_true = self.root(x[-1])
-                if np.abs(g_true - g[-1]) < 1e-2:
-                    force_power_iter += 1
-                    reverting = False
+                try:
+                    g_true = self.root(x[-1])
+                except:
+                    break
+                if np.abs(g[-1] - g_true) > 1e-2:
+                    alpha.pop()
+                    g.pop()
+                    x.pop()
+                    dual.pop()
+                    grad.pop()
+                    hess.pop()
+                    ndir.pop()
+                    back.pop()
+                    continue
                 else:
-                    if iters > 1:
-                        iters -= 1
-                        alpha.pop()
-                        g.pop()
-                        x.pop()
-                        dual.pop()
-                        grad.pop()
-                        hess.pop()
-                        ndir.pop()
-                        continue
-                    return self.run(x_init, g_init=g_true, alpha_init=alpha_min, alpha_min=alpha_min, grad_tol=grad_tol)
-            else:
-                force_power_iter = max(0, force_power_iter - 1)
+                    if alpha[-1] < alpha_min:
+                        iters += 1
+                        ignore_problem = True
+                    else:
+                        alpha[-1] *= 1e-1
 
+            # Set initial step size for backtracking
+            alpha_new = alpha[-1]
+            if back[-1] == 1 and iters > 1 and abs(norm(grad[-1]) - norm(grad[-2])) < 1e-1 * norm(grad[-2]):
+                alpha_new *= 1e1
+            elif alpha_new < alpha_init:
+                alpha_new = alpha_init
+            
             # Determine step
             iters_back = 0
             while True:
@@ -453,53 +456,76 @@ class BFGS(_Optimizer):
                 # Propose new x
                 x_new = x[-1] + alpha_new * ndir[-1]
                 try:
-                    if force_power_iter > 0:
-                        raise ValueError("forcing power iteration.")
                     g_new = root_aaa(lambda z: self.C(z, x_new), g[-1])
                 except ValueError:
                     g_new = self.root(x_new)
                 x_new[1] = max(0, g_new)
 
                 # Get state at new x
-                dual_new, grad_new, _, _ = self.optfunc(x_new, get_grad=True, get_hess=False)
+                dual_new, grad_new, H, _ = self.optfunc(x_new, get_grad=True, get_hess=True)
                 grad_new[1] = 0
                 hess_new = self._update_Hinv(hess[-1], grad_new, grad[-1], ndir[-1], reset=False)
                 hess_small = np.vstack((hess_new[0], hess_new[2:]))
-                hess_small = np.vstack((hess_new.T[0], hess_new.T[2:])).T
+                hess_small = np.vstack((hess_small.T[0], hess_small.T[2:])).T
                 grad_small = np.concatenate(([grad_new[0]], grad_new[2:]))
                 ndir_new = -hess_small @ grad_small
+                ndir_new = np.insert(ndir_new, 1, np.zeros(1))
                 ndir_new = ndir_new / norm(ndir_new)
                 print(f"\titer {iters}-{iters_back}-> dual: {dual_new:.4f}, grad: {norm(grad_new):.4f}, alpha: {alpha_new}, power {force_power_iter}")
 
-                # Validate new state
+                # Check if positive definite
                 # e = np.min(np.linalg.eigvals(self._get_total_A(x_new).todense()).real)
                 # if e < 0:
-                #     print(f"\t\t Indefinite with lowest eigenvalue {e:.4f}")
-                if alpha_new < alpha_min:
-                    alpha_new = alpha_init
-                elif dual_new > dual[-1]:
-                    alpha_new *= 1e-1
-                    continue
-                elif norm(grad_new) > norm(grad[-1]):
-                    if not force_power_iter:
-                        reverting = True
-                        break
-                
+                #     print("\t indefinite")
+                is_pd = True
+                try:
+                    np.linalg.cholesky(H)
+                    if norm(grad_new) > norm(grad[-1]):
+                        raise ValueError
+                    if np.abs(dual_new - dual[-1]) * norm(dual[-1] - dual[-2]) > np.abs(dual[-1] - dual[-2]) * norm(dual_new - dual[-1]):
+                        raise ValueError
+                except:
+                    is_pd = False
 
-                # Choose new parameters
-                if iters_back == 1:
-                    alpha_new *= 1e1
-                alpha.append(alpha_new)
-                g.append(g_new)
-                x.append(x_new)
-                dual.append(dual_new)
-                grad.append(grad_new)
-                hess.append(hess_new)
-                ndir.append(ndir_new)
-                break
-        
+                # Determine if a backtrack or revert is necessary
+                if is_pd:
+                    if dual_new < dual[-1] or alpha_new < alpha_min:
+                        alpha.append(alpha_new)
+                        g.append(g_new)
+                        x.append(x_new)
+                        dual.append(dual_new)
+                        grad.append(grad_new)
+                        hess.append(hess_new)
+                        ndir.append(ndir_new)
+                        back.append(iters_back)
+                        revert = False
+                        break
+                    else:
+                        alpha_new *= 1e-1
+                        continue
+                else:
+                    if alpha_new < alpha_min:
+                        if ignore_problem:
+                            alpha.append(alpha_new)
+                            g.append(g_new)
+                            x.append(x_new)
+                            dual.append(dual_new)
+                            grad.append(grad_new)
+                            hess.append(hess_new)
+                            ndir.append(ndir_new)
+                            back.append(iters_back)
+                            revert = False
+                            break
+                        else:
+                            revert = True
+                            break
+                    else:
+                        alpha_new *= 1e-1
+                        continue
+
             # Check convergence
-            if norm(grad[-1]) < grad_tol or (iters > stable_n and np.abs(dual[-1] - np.mean(dual[-stable_n:-1])) < stable_tol):
+            if norm(grad[-1]) < grad_tol or (abs(dual[-1] - np.mean(dual[-n_conv:-1])) < conv_tol and iters > n_conv):
+                print(x[-1], dual[-1], grad[-1], None, g[-1], alpha[-1])
                 return x[-1], dual[-1], grad[-1], None, g[-1], alpha[-1]
 
 
