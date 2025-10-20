@@ -952,33 +952,39 @@ def merge_lead_constraints(QCQP: _SharedProjQCQP, merged_num: int = 2) -> None:
         raise ValueError("Need at least 2 constraints for merging.")
     if cstrt_num < merged_num:
         raise ValueError("Number of constraints insufficient for size of merge.")
-    
+
     new_Pdiags = np.zeros((x_size,cstrt_num-merged_num+1), dtype=complex)
     new_lags = np.zeros(cstrt_num-merged_num+1, dtype=float)
-    new_Pdiags[:,0] = QCQP.Pdiags[:,:merged_num] @ QCQP.current_lags[:merged_num]
+    new_lags[:2] = QCQP.current_lags[:2]
+    new_Pdiags[:,0] = QCQP.Pdiags[:,0]
+    new_Pdiags[:,1] = QCQP.Pdiags[:,1]
+    new_Pdiags[:,2] = QCQP.Pdiags[:,2:merged_num+2] @ QCQP.current_lags[2:merged_num+2]
     
     # normalize merged Pdiag
-    Pnorm = la.norm(new_Pdiags[:,0])
-    new_Pdiags[:,0] /= Pnorm
-    new_lags[0] = Pnorm
+    Pnorm = la.norm(new_Pdiags[:,2])
+    new_Pdiags[:,2] /= Pnorm
+    new_lags[2] = Pnorm
     
     # put other constraints in
-    new_Pdiags[:,1:] = QCQP.Pdiags[:,merged_num:]
-    new_lags[1:] = QCQP.current_lags[merged_num:]
+    new_Pdiags[:,3:] = QCQP.Pdiags[:,merged_num+2:]
+    new_lags[3:] = QCQP.current_lags[merged_num+2:]
     
     # update QCQP
     if hasattr(QCQP, 'precomputed_As'):
         # updated precomputed_As
-        QCQP.precomputed_As[merged_num-1] *= QCQP.current_lags[merged_num-1]
-        for i in range(merged_num-1):
-            QCQP.precomputed_As[merged_num-1] += QCQP.precomputed_As[i] * QCQP.current_lags[i]
-        QCQP.precomputed_As[merged_num-1] /= Pnorm
-        del QCQP.precomputed_As[:merged_num-1]
+        QCQP.precomputed_As[merged_num+1] *= QCQP.current_lags[merged_num+1]
+        for i in range(2, merged_num+1):
+            QCQP.precomputed_As[merged_num+1] += QCQP.precomputed_As[i] * QCQP.current_lags[i]
+        QCQP.precomputed_As[merged_num+1] /= Pnorm
+        del QCQP.precomputed_As[2:merged_num+1]
     
     if hasattr(QCQP, 'Fs'):
         new_Fs = np.zeros((x_size,cstrt_num-merged_num+1), dtype=complex)
-        new_Fs[:,0] = QCQP.A2.conj().T @ (new_Pdiags[:,0].conj() * QCQP.s1)
-        new_Fs[:,1:] = QCQP.Fs[:,merged_num:]
+        new_Fs[:,0] = QCQP.Fs[:,0]
+        new_Fs[:,1] = QCQP.Fs[:,1]
+        new_Fs[:,2] = QCQP.A2.conj().T @ (new_Pdiags[:,2].conj() * QCQP.s1)
+        new_Fs[:,3:] = QCQP.Fs[:,merged_num+2:]
+
         QCQP.Fs = new_Fs
     
     QCQP.Pdiags = new_Pdiags
@@ -1105,7 +1111,8 @@ def run_gcd(QCQP: _SharedProjQCQP,
     while True:
         gcd_iter_num += 1
         # solve current dual problem
-        QCQP.solve_current_dual_problem('newton', init_lags=QCQP.current_lags, opt_params=opt_params)
+        # print(la.eigvals(QCQP.precomputed_As[1].todense()))
+        QCQP.solve_current_dual_problem('bfgs', init_lags=QCQP.current_lags, opt_params=opt_params)
         print(f'At GCD iteration #{gcd_iter_num}, best dual bound found is {QCQP.current_dual}.')
         
         ## termination conditions
