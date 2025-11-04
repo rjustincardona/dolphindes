@@ -259,9 +259,10 @@ class _SharedProjQCQP(ABC):
         P_diag = self._add_projectors(lags)
         A = self._get_total_A(lags)
         S = self._get_total_S(P_diag)
-        self._update_Acho(A) # update the Cholesky factorization
+        # self._update_Acho(A) # update the Cholesky factorization
         
-        x_star = self._Acho_solve(S)
+        # x_star = self._Acho_solve(S)
+        x_star = spla.spsolve(A, S)
         xAx = np.real(x_star.conjugate() @ A @ x_star)
 
         return x_star, xAx
@@ -317,7 +318,8 @@ class _SharedProjQCQP(ABC):
             grad = np.real(xstar.conj() @ (Fx + 2*self.Fs)) #get_hess implies get_grad also
             
             Ftot = Fx + self.Fs
-            hess = 2*np.real(Ftot.conj().T @ self._Acho_solve(Ftot))
+            # hess = 2*np.real(Ftot.conj().T @ self._Acho_solve(Ftot))
+            hess = 2*np.real(Ftot.conj().T @ spla.spsolve(self._get_total_A(lags), Ftot))
 
         elif get_grad: # This is grad_lambda (not grad_x); elif since get_hess automatically computes grad
             # First term: -Re(xstar.conj() @ self.A1 @ (self.Pdiags[:, i] * (self.A2 @ xstar))). Second term: 2*Re(xstar.conj() @ self.A2.T.conj() @ (self.Pdiags[:, i].conj() * self.s1))
@@ -332,13 +334,15 @@ class _SharedProjQCQP(ABC):
             # term2 = 2 * np.real(A2_xstar.conj() @ (self.Pdiags.conj() * self.s1[:, np.newaxis])) #. Same as above. 
             term2 = 2 * np.real( (A2_xstar.conj() * self.s1) @ self.Pdiags.conj() )
             grad = term1 + term2
+            # (2 * np.real( (A2_xstar.conj() * self.s1) @ self.Pdiags.conj()[:, 1] ) - np.real( (x_conj_A1 * A2_xstar) @ self.Pdiags[:, 1] ))
 
 
         # Boundary penalty for the PSD boundary 
         dualval_penalty = 0.0 
         if len(penalty_vectors) > 0:
             penalty_matrix = np.column_stack(penalty_vectors)
-            A_inv_penalty = self._Acho_solve(penalty_matrix)
+            # A_inv_penalty = self._Acho_solve(penalty_matrix)
+            A_inv_penalty = spla.spsolve(self._get_total_A(lags), penalty_matrix)
             dualval_penalty += np.sum(np.real(A_inv_penalty.conj() * penalty_matrix)) # multiplies columns with columns, sums all at once
 
             if get_hess:
@@ -361,6 +365,7 @@ class _SharedProjQCQP(ABC):
                     # fast: grad_penalty += -np.real((A_inv_penalty[:, j].conj().T @ self.A1) @ (self.Pdiags * (self.A2 @ A_inv_penalty[:, j])[:, np.newaxis]))
 
                     # Same as above (fastest)
+                    A_inv_penalty = np.reshape(A_inv_penalty, penalty_matrix.shape)
                     A_inv_penalty_j_A1 = A_inv_penalty[:, j].conj().T @ self.A1  
                     A2_A_inv_penalty_j = self.A2 @ A_inv_penalty[:, j]  # Shape: (N_p,)
                     grad_penalty += -np.real( (A_inv_penalty_j_A1 * A2_A_inv_penalty_j) @ self.Pdiags ) 
@@ -414,9 +419,9 @@ class _SharedProjQCQP(ABC):
         penalty_vector_func = self._get_PSD_penalty
         
         if method == 'newton':
-            optimizer = Alt_Newton_GD(optfunc, feasibility_func, penalty_vector_func, is_convex, opt_params)
+            optimizer = Alt_Newton_GD(optfunc, self._get_xstar,self. A1, self.A2, self.s1, self.Pdiags, self.precomputed_As[1], self._get_total_A, feasibility_func, penalty_vector_func, is_convex, opt_params)
         elif method == 'bfgs':
-            optimizer = BFGS(optfunc, feasibility_func, penalty_vector_func, is_convex, opt_params)
+            optimizer = BFGS(optfunc, self._get_xstar, self.A1, self.A2, self.s1, self.Pdiags, self.precomputed_As[1], self._get_total_A, feasibility_func, penalty_vector_func, is_convex, opt_params)
         else: 
             raise ValueError(f"Unknown method '{method}' for solving the dual problem. Use newton or bfgs.")
         
@@ -1086,7 +1091,7 @@ def run_gcd(QCQP: _SharedProjQCQP,
     TODO: formalize optimization and convergence parameters.
     """
     # since GCD is constantly changing the constraints, no need for many fake source iterations
-    OPT_PARAMS_DEFAULTS = {'max_restart':1}
+    OPT_PARAMS_DEFAULTS = {'max_restart':1, "penalty_reduction":1.0}
     if opt_params is None:
         opt_params = {}
     opt_params = {**OPT_PARAMS_DEFAULTS, **opt_params}
@@ -1103,8 +1108,11 @@ def run_gcd(QCQP: _SharedProjQCQP,
         realext_Pdiags_Q, realext_Pdiags_R = la.qr(realext_Pdiags, mode='economic')
         QCQP.Pdiags = realext_Pdiags_Q[:x_size,:] + 1j*realext_Pdiags_Q[x_size:,:]
         QCQP.current_lags = realext_Pdiags_R @ QCQP.current_lags
+        QCQP.Pdiags[:, 1] = -1j*np.abs(QCQP.Pdiags[:, 1])  # ensure second projector is positive on diagonal
+        QCQP.current_lags[1] = np.abs(QCQP.current_lags[1])
+        # input(QCQP.Pdiags[:, 1])
         QCQP.compute_precomputed_values()
-    
+
     ## gcd loop
     gcd_iter_num = 0
     gcd_prev_dual = np.inf

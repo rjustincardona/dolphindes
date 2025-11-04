@@ -302,7 +302,9 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         
         self.get_ei(self.ji, update=True)
 
-        if Pdiags=="global":
+        if type(Pdiags) == np.ndarray:
+            self.Pdiags = Pdiags
+        elif Pdiags=="global":
             self.Pdiags = np.ones((self.Ndes,2), dtype=complex)
             self.Pdiags[:,1] = -1j
         else:

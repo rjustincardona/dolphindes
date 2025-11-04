@@ -6,6 +6,61 @@ Optimizers
 __all__ = ["BFGS", "Alt_Newton_GD"]
 
 import numpy as np 
+import matplotlib.pyplot as plt
+import scipy.sparse.linalg as spla
+from scipy.interpolate import AAA
+
+def bisect(f, a, b, tol=1e-6, max_iter=100):
+    fa = f(a)
+    fb = f(b)
+    if fa * fb > 0:
+        return bisect(f, a, b+abs(b-a), tol=tol, max_iter=max_iter)
+    for _ in range(max_iter):
+        c = (a + b) / 2
+        fc = f(c)
+        if abs(fc) < tol or (b - a) / 2 < tol:
+            return c
+        if fa * fc < 0:
+            b = c
+            fb = fc
+        else:
+            a = c
+            fa = fc
+    raise ValueError("Maximum iterations reached without convergence")
+
+def pole_aaa(f, x0, tol=1e-4, r=1e-1, max_iter=5, max_restart=7):
+    xs = [x0]
+    fs = [f(x0)]
+    for _ in range(max_restart):
+        idx = np.argmin(np.abs(fs))
+        xs = [xs[idx]]
+        fs = [fs[idx]]
+        xs.append(x0 - np.sign(fs[-1]) * r)
+        fs.append(f(xs[-1]))
+        for _ in range(max_iter):
+            a = AAA(xs, fs)
+            root = np.max(np.real(a.roots()))
+            xs.append(root)
+            fs.append(f(xs[-1]))
+            if np.abs(fs[-1]) < tol:
+                return np.real(np.max(a.poles())), xs[-1]
+        # print(xs, fs)
+        # x_plot = np.sort(list(np.linspace(np.min(xs), np.max(xs))) + xs)
+        # y_plot = [a(x) for x in x_plot]
+        # f_plot = [f(x) for x in x_plot]
+        # plt.scatter(xs, fs, color='orange', label='Sampled Points')
+        # plt.plot(x_plot, y_plot, label='AAA Approximation')
+        # plt.plot(x_plot, f_plot, label='f(x)')
+        # ymax = max(np.max(y_plot), np.max(f_plot))
+        # ymin = min(np.min(y_plot), np.min(f_plot))
+        # plt.vlines(xs[-1], ymin=ymin, ymax=ymax, colors='r', linestyles='dashed', label='Estimated Root')
+        # plt.vlines(xs[0], ymin=ymin, ymax=ymax, colors='g', linestyles='dashed', label='Initial Point')
+        # plt.legend()
+        # plt.show()
+        # plt.close()
+        
+    raise ValueError("root_aaa did not converge")
+                
 
 class _Optimizer():
     """Base class for optimization algorithms.
@@ -42,7 +97,7 @@ class _Optimizer():
 
     OPT_PARAMS_DEFAULTS = {'opttol': 1e-8, 'gradConverge': False, 'min_inner_iter': 5, 'max_restart': np.inf, 'penalty_ratio': 1e-2, 'penalty_reduction': 0.1, 'break_iter_period': 50, 'verbose': 0}
 
-    def __init__(self, optfunc, feasible_func, penalty_vector_func, is_convex, opt_params):
+    def __init__(self, optfunc, _get_xstar, A1, A2, s1, Pdiags, aU, _get_total_A, feasible_func, penalty_vector_func, is_convex, opt_params):
         self.optfunc = optfunc
         self.feasible_func = feasible_func
         self.penalty_vector_func = penalty_vector_func
@@ -59,6 +114,68 @@ class _Optimizer():
         self.opt_x = None 
         self.opt_fx = None
         self.verbose = self.opt_params['verbose']
+
+        # Partial Dual stuff
+        self._get_xstar = _get_xstar
+        self.A1 = A1
+        self.A2 = A2
+        self.s1 = s1
+        self.Pdiags = Pdiags
+        self._get_total_A = _get_total_A
+        self.aU = aU
+
+    def C(self, x0, z, penalty_vectors=[]):
+        lags = x0.copy()
+        lags[1] = z
+        xstar, _ = self._get_xstar(lags)
+        A2_xstar = self.A2 @ xstar
+        x_conj_A1 = xstar.conj() @ self.A1
+        result = 2 * np.real( (A2_xstar.conj() * self.s1) @ self.Pdiags.conj()[:, 1] ) - np.real( (x_conj_A1 * A2_xstar) @ self.Pdiags[:, 1] )
+        
+        if len(penalty_vectors) > 0:
+            penalty_matrix = np.column_stack(penalty_vectors)
+            A_inv_penalty = spla.spsolve(self._get_total_A(lags), penalty_matrix)
+            grad_penalty = 0
+            for j in range(penalty_matrix.shape[1]):
+                A_inv_penalty = np.reshape(A_inv_penalty, penalty_matrix.shape)
+                A_inv_penalty_j_A1 = A_inv_penalty[:, j].conj().T @ self.A1  
+                A2_A_inv_penalty_j = self.A2 @ A_inv_penalty[:, j]  # Shape: (N_p,)
+                grad_penalty += -np.real( (A_inv_penalty_j_A1 * A2_A_inv_penalty_j) @ self.Pdiags[1] )
+        else:
+            grad_penalty = 0
+        return result + grad_penalty
+    
+    def min_g(self, x0):
+        lags = x0.copy()
+        lags[1] = 0
+        Lq = self._get_total_A(lags)
+        pole, vectors = spla.eigs(Lq, M=self.aU, k=1, return_eigenvectors=True)
+        pole = pole[0]
+        if pole > 0:
+            pole, vectors = spla.eigs(Lq, M=self.aU, sigma=-pole, k=1, return_eigenvectors=True)
+            pole = pole[0]
+        pole = -pole.real
+
+        try:
+            _, root = pole_aaa(lambda z: self.C(x0, z), pole+1e-3)
+            # print("aaa: ", root)
+        except ValueError:
+            root = bisect(lambda z: self.C(x0, z), a=pole+1e-4, b=pole+10)
+            # print("bisect: ", root)
+        # x_plot = np.linspace(pole-10, root+10, 1000)
+        # y_plot = [self.C(x0, z) for z in x_plot]
+        # plt.plot(x_plot, y_plot)
+        # plt.vlines(pole, ymin=min(y_plot), ymax=max(y_plot), colors='r', linestyles='dashed', label='PSD boundary')
+        # plt.vlines(root, ymin=min(y_plot), ymax=max(y_plot), colors='g', linestyles='dashed', label=r'Optimal $\gamma$')
+        # plt.legend()
+        # plt.xlabel(r"$\gamma$")
+        # plt.ylabel("$C(\gamma)$")
+        # plt.yscale('asinh')
+        # plt.show()
+        # plt.close()
+        return pole, root
+
+
 
     def get_last_opt(self):
         """Get the last optimized x and f(x) values."""
@@ -101,10 +218,22 @@ class _Optimizer():
         alpha = alpha_start = init_step_size
 
         if self.verbose >= 3: print(f"\nStarting line search with parameters alpha_start = {alpha_start}, alpha = {alpha}")
-        while not self.feasible_func(x0 + alpha * dir):
+        back_iter = 0
+        # while not self.feasible_func(x0 + alpha * dir):
+        pole, root = self.min_g(x0 + alpha * dir)
+        while pole > x0[1] + alpha * dir[1]+1e-3:
+            back_iter += 1
+            if alpha < 1e-5:
+                break
             alpha *= c_reduct
+            pole, root = self.min_g(x0 + alpha * dir)
+            # try:
+            #     pole, root = pole_aaa(lambda z: self.C(x0 + alpha * dir, z), x0=root)
+            # except ValueError:
+            #     pole, root = self.min_g(x0 + alpha * dir)
         alpha_opt = alpha
         alpha_feas = alpha
+
 
         # Next, find optimal alpha 
         c_A = 1e-4
@@ -125,8 +254,15 @@ class _Optimizer():
             alpha *= c_reduct
         
         if self.verbose >= 2: print(f"Line search found optimal step size: {alpha_opt}")
+        pole, root = self.min_g(x0 + alpha * dir)
+        # calculate second derivative of C at root
+        h = (pole - root) / 2
+        C_plus = self.C(x0 + alpha * dir, root + h)
+        C_minus = self.C(x0 + alpha * dir, root - h)
+        C_root = self.C(x0 + alpha * dir, root)
+        C_dd = (C_plus - 2 * C_root + C_minus) / (h**2)
 
-        return alpha_opt, alpha_feas
+        return alpha_opt, alpha_feas, pole, root, C_dd
     
     def run(self, x0, tol=None):
         """Run the optimization routine with initial point x0 and tolerance tol
@@ -261,12 +397,12 @@ class BFGS(_Optimizer):
             
         return new_Hinv
     
-    def _add_penalty(self, opt_step_size, last_step_size, feas_step_size, x0, dir, opt_fx0):
+    def _add_penalty(self, opt_step_size, last_step_size, feas_step_size, x0, dir, opt_fx0, pole, root, curvature, e ):
         if np.isclose(opt_step_size, last_step_size, atol=0.0):
             # if no backtracking happened, can start with a more aggressive stepsize
             return opt_step_size * 2, False
         else:
-            if feas_step_size < last_step_size and np.isclose(opt_step_size, feas_step_size, atol=0.0):
+            if (feas_step_size < last_step_size and np.isclose(opt_step_size, feas_step_size, atol=0.0)) or pole - root < 1e-2 or curvature > -1e-3 or e < 1e-1:
                 # all the backtracking due to feasibility reasons, add penalty
                 if self.verbose >= 2: print("Adding penalty due to feasibility wall.")
                 penalty_vector, _ = self.penalty_vector_func(x0 + opt_step_size * dir)
@@ -310,8 +446,11 @@ class BFGS(_Optimizer):
                 BFGS_dir = - Hinv @ self.xgrad
                 nBFGS_dir = BFGS_dir / np.linalg.norm(BFGS_dir)
 
-                opt_step_size, feas_step_size = self._line_search(nBFGS_dir, self.opt_x, self.opt_fx, self.xgrad, last_step_size) # Perform line search for step size 
-                last_step_size, added_penalty = self._add_penalty(opt_step_size, last_step_size, feas_step_size, self.opt_x, nBFGS_dir, self.opt_fx) 
+                opt_step_size, feas_step_size, pole, root, curvature = self._line_search(nBFGS_dir, self.opt_x, self.opt_fx, self.xgrad, last_step_size) # Perform line search for step size 
+
+
+                e = np.min(np.linalg.eigvals(Hinv))
+                last_step_size, added_penalty = self._add_penalty(opt_step_size, last_step_size, feas_step_size, self.opt_x, nBFGS_dir, self.opt_fx, pole, root, curvature, e)
 
                 delta = opt_step_size * nBFGS_dir
                 old_grad = self.xgrad.copy()  # Save old gradient before update
@@ -320,16 +459,30 @@ class BFGS(_Optimizer):
                 new_opt_fx, new_grad, _, __ = self.optfunc(self.opt_x, get_grad=True, get_hess=False, penalty_vectors=self.penalty_vector_list) # Get new function value and gradient
 
                 Hinv = self._update_Hinv(Hinv, new_grad, old_grad, delta, reset=added_penalty) # Update Hessian inverse. If added_penalty, will reset.
+
                 self.opt_fx = new_opt_fx
                 self.xgrad = new_grad
 
                 if self._break_condition(inner_iter_count, 'inner'): break 
+                # if inner_iter_count > 50: break
 
             if self._break_condition(outer_iter_count, 'outer'): break 
             self.prev_fx_outer = self.opt_fx
 
             outer_iter_count += 1
             self.opt_params['penalty_ratio'] *= self.opt_params['penalty_reduction']
+            # if outer_iter_count > 3: break
+        
+        # pole, root = self.min_g(self.opt_x)
+        # x_plot = np.linspace(pole-1e-3, max(self.opt_x[1], root), 100)
+        # y_plot = [self.C(self.opt_x, z) for z in x_plot]
+        # plt.plot(x_plot, y_plot, label='C(x0, z)')
+        # plt.vlines(self.opt_x[1], ymin=min(y_plot), ymax=max(y_plot), colors='r', linestyles='dashed', label='Current x0[1]')
+        # plt.vlines(root, ymin=min(y_plot), ymax=max(y_plot), colors='g', linestyles='dashed', label='Root z')
+        # plt.vlines(pole, ymin=min(y_plot), ymax=max(y_plot), colors='orange', linestyles='dashed', label='Pole')
+        # plt.legend()
+        # plt.show()
+        # plt.close()
             
         return self.opt_x, self.opt_fx, self.xgrad, None
 
