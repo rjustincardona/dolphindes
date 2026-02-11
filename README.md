@@ -1,5 +1,11 @@
 # Dolphindes 🐬
 
+[![CI: Quality](https://github.com/physical-design-bounds/dolphindes/actions/workflows/quality.yml/badge.svg)](https://github.com/physical-design-bounds/dolphindes/actions/workflows/quality.yml)
+[![CI: Tests](https://github.com/physical-design-bounds/dolphindes/actions/workflows/tests.yml/badge.svg)](https://github.com/physical-design-bounds/dolphindes/actions/workflows/tests.yml)
+[![Daily Full Tests](https://github.com/physical-design-bounds/dolphindes/actions/workflows/daily_checks.yml/badge.svg)](https://github.com/physical-design-bounds/dolphindes/actions/workflows/daily_checks.yml)
+[![codecov](https://codecov.io/github/physical-design-bounds/dolphindes/graph/badge.svg?token=3C7DSQLXIS)](https://codecov.io/github/physical-design-bounds/dolphindes)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 Dolphindes (very loosely, Dual Optimization Limits for PHotonic/PHysical INverse DESign) is a Python package for calculating limits on the performance of photonic devices using dual optimization methods. It can calculate structure-agnostic performance bounds for a wide range of photonic problems. The package works by relaxing the photonic inverse design problem into a field optimization problem, which can then be further relaxed into a convex problem using Lagrange duality. 
 
 ## 📦 Installation 
@@ -15,7 +21,13 @@ sudo apt-get update
 sudo apt-get install libsuitesparse-dev
 ``` 
 
-### 2. Setup and activate the provided conda environment dolphindes.yml
+### 2. Clone this repo and activate the provided conda environment dolphindes.yml
+
+### 3. If using your own environment, instead run
+
+```bash
+pip install .
+```
 
 ## 🔧 Running Tests
 
@@ -29,7 +41,7 @@ Optionally, provide the -s flag to print the output of the tests. You will need 
 
 ## 📚 Documentation and Tutorials
 
-We are currently working on more comprehensive documentation. For now, please refer to the Jupyter Notebooks in the examples/ directory for detailed demonstrations on using dolphindes to compute bounds for photonic inverse design problems and extract design templates. 
+Documentation may be found at [dolphindes.readthedocs.io](https://dolphindes.readthedocs.io)
 
 ## Citations
 

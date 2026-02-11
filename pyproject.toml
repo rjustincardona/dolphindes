@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# This section defines your package's metadata and dependencies.
+[project]
+name = "dolphindes"
+version = "0.1.0"
+authors = [
+  { name="Dolphindes Contributors"},
+]
+description = "A Python package for calculating limits on the performance of photonic devices using dual optimization methods."
+readme = "README.md"
+requires-python = ">=3.10"
+
+# These are the core libraries your package needs to run.
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "nlopt",
+    "scikit-sparse",
+]
+
+# This section defines optional sets of dependencies, e.g., for development or building docs.
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-dependency",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "ipykernel",
+]
+docs = [
+    "sphinx",
+    "myst-parser",
+    "sphinx-automodapi",
+    "pydata-sphinx-theme",
+    "nbsphinx",
+]
+
+[tool.setuptools.packages.find]
+include = ["dolphindes"]
+
+# -----------------------------
+# Linting & Docstrings: Ruff
+# -----------------------------
+[tool.ruff]
+line-length = 88
+extend-exclude = ["*.ipynb", "build", "dist"]
+
+[tool.ruff.lint]
+# Enable general linting + docstring checks
+select = ["E", "F", "I", "D"]
+# Enforce NumPy-style docstrings
+pydocstyle.convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests aren't required to be fully docstring-clean; also ignore long explanatory lines.
+"tests/**/*.py" = ["D", "E501"]
+
+# -----------------------------
+# Type checking: mypy
+# -----------------------------
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+exclude = ["build", "docs"]
+
+# Ignore all mypy errors inside the tests package so tests don't need annotations.
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+ignore_errors = true
+
+[tool.setuptools.package-data]
+"dolphindes" = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: long-running numerical tests",
+]

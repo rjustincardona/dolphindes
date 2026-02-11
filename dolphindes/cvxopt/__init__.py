@@ -1,6 +1,21 @@
-from .qcqp import SparseSharedProjQCQP, DenseSharedProjQCQP, merge_lead_constraints, add_constraints, run_gcd
-from .optimization import BFGS, Alt_Newton_GD
+"""Routines for optimization."""
 
-__all__ = ['SparseSharedProjQCQP', 'DenseSharedProjQCQP',
-           'BFGS', 'Alt_Newton_GD',
-           'merge_lead_constraints', 'add_constraints', 'run_gcd']
+from . import gcd
+from ._base_qcqp import _SharedProjQCQP
+from .gcd import GCDHyperparameters
+from .optimization import BFGS, Alt_Newton_GD, OptimizationHyperparameters
+from .qcqp import (
+    DenseSharedProjQCQP,
+    SparseSharedProjQCQP,
+)
+
+__all__ = [
+    "_SharedProjQCQP",
+    "SparseSharedProjQCQP",
+    "DenseSharedProjQCQP",
+    "BFGS",
+    "Alt_Newton_GD",
+    "OptimizationHyperparameters",
+    "gcd",
+    "GCDHyperparameters",
+]
