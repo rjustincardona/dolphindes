@@ -488,6 +488,16 @@ class _SharedProjQCQP(ABC):
         Uses shift-invert (eigsh with sigma=0.0) to approximate the smallest
         magnitude eigenvalue/eigenvector of A(lags) for PSD boundary penalization.
 
+        Shift-invert at sigma=0 works by applying A^{-1}, and left to itself
+        ``eigsh`` builds a factorization of A for that purpose and throws it away
+        on return. 
+        
+        Subclasses that can apply A^{-1} more cheaply say so through
+        :meth:`_shift_invert_OPinv`. A(lags) is also factorized through
+        ``_get_factorization`` rather than merely assembled, so a factor already in
+        the cache is reused (which it usually is, since the optimizer asks for a
+        penalty vector at a step it has just tested for feasibility).
+
         Parameters
         ----------
         lags : FloatNDArray
@@ -500,9 +510,38 @@ class _SharedProjQCQP(ABC):
         lam : float
             Corresponding eigenvalue (should be ≥ 0 at feasibility).
         """
-        A = self._get_total_A(lags)
-        eigw, eigv = spla.eigsh(A, k=1, sigma=0.0, which="LM", return_eigenvectors=True)
+        A, _factor = self._get_factorization(lags)
+        eigw, eigv = spla.eigsh(
+            A,
+            k=1,
+            sigma=0.0,
+            which="LM",
+            OPinv=self._shift_invert_OPinv(A),
+            return_eigenvectors=True,
+        )
         return eigv[:, 0], eigw[0]
+
+    def _shift_invert_OPinv(
+        self, A: sp.csc_array | ComplexArray
+    ) -> Optional["spla.LinearOperator"]:
+        """Return an operator applying A^{-1}, or None to let ``eigsh`` decide.
+
+        Returning None makes ``eigsh`` factorize A itself, which is correct whenever it
+        costs less per application than this class's own
+        solve. Subclasses override when theirs is cheaper.
+
+        Parameters
+        ----------
+        A : sp.csc_array | ComplexArray
+            The matrix being analyzed. Already factorized by the caller, so an
+            override may use the current factor.
+
+        Returns
+        -------
+        scipy.sparse.linalg.LinearOperator | None
+            Operator applying A^{-1}, or None.
+        """
+        return None
 
     def _get_xstar(self, lags: FloatNDArray) -> Tuple[ComplexArray, float]:
         """

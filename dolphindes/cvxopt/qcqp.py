@@ -15,6 +15,7 @@ from typing import Any, cast
 import numpy as np
 import scipy.linalg as la
 import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 import sksparse.cholmod
 from numpy.typing import ArrayLike
 
@@ -217,6 +218,29 @@ class SparseSharedProjQCQP(_SharedProjQCQP):
         """
         assert self.Acho is not None
         return cast(ComplexArray, self.Acho.solve_A(b))
+
+    def _shift_invert_OPinv(
+        self, A: sp.csc_array | ComplexArray
+    ) -> spla.LinearOperator:
+        """
+        Return the CHOLMOD-backed A^{-1} operator for shift-invert ``eigsh``.
+
+        CHOLMOD applies A^{-1} far more cheaply than the sparse LU ``eigsh`` would
+        build for itself, and reusing the factor the caller already has makes the
+        eigensolve independent of the constraint count.
+
+        Parameters
+        ----------
+        A : sp.csc_array | ComplexArray
+            The matrix being analyzed, already factorized by the caller, so
+            ``self.Acho`` is its factor.
+
+        Returns
+        -------
+        scipy.sparse.linalg.LinearOperator
+            Operator applying A^{-1} through the current CHOLMOD factor.
+        """
+        return spla.LinearOperator(A.shape, matvec=self._Acho_solve, dtype=complex)
 
     def is_dual_feasible(self, lags: FloatNDArray) -> bool:
         """
