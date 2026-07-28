@@ -559,10 +559,14 @@ class _SharedProjQCQP(ABC):
         xAx : float
             Value x*^† A x* (real scalar).
         """
-        A, _factor = self._get_factorization(lags)
+        # Called for self.Acho, which _Acho_solve reads
+        self._get_factorization(lags)
         S = self._get_total_S(lags)
         x_star: ComplexArray = self._Acho_solve(S)
-        xAx: float = np.real(np.vdot(x_star, A @ x_star))
+
+        # Faster and more accurate than np.real(np.vdot(x_star, A @ x_star)), since
+        # A x* = S.
+        xAx: float = np.real(np.vdot(x_star, S))
 
         return x_star, xAx
 
