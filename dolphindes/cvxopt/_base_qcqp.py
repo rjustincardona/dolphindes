@@ -15,6 +15,18 @@ from .optimization import BFGS, Alt_Newton_GD, OptimizationHyperparameters, _Opt
 if TYPE_CHECKING:
     from .gcd import GCDHyperparameters, OrthoMetric
 
+# Auxiliary components returned by get_dual
+DualAux = namedtuple(
+    "DualAux",
+    [
+        "dualval_real",
+        "dualgrad_real",
+        "dualval_penalty",
+        "grad_penalty",
+        "hess_penalty",
+    ],
+)
+
 
 class _SharedProjQCQP(ABC):
     """Represents a quadratically constrained quadratic program (QCQP).
@@ -570,6 +582,25 @@ class _SharedProjQCQP(ABC):
 
         return x_star, xAx
 
+    def _allA_at_v(self, v: ComplexArray) -> ComplexArray:
+        """
+        Apply every constraint operator to v: return the block with columns A_k v.
+
+        Parameters
+        ----------
+        v : ComplexArray
+            Vector to apply the constraint operators to.
+
+        Returns
+        -------
+        ComplexArray
+            Block of shape (len(v), n_proj_constr + n_gen_constr).
+        """
+        out = np.empty((len(v), self.get_number_constraints()), dtype=complex)
+        for k, Ak in enumerate(self.precomputed_As):
+            out[:, k] = Ak @ v
+        return out
+
     def get_dual(
         self,
         lags: FloatNDArray,
@@ -621,26 +652,15 @@ class _SharedProjQCQP(ABC):
         dualval += self.c0 + self._get_total_C(lags)
 
         if get_hess:
-            try:
-                # useful intermediate computations
-                # (Fx)_k = -A_k @ x_star
-                # where A_k is quadratic form of constraints
+            # (Fx)_k = -A_k @ x_star, where A_k is the quadratic form of constraint k
+            Fx = -self._allA_at_v(xstar)
 
-                Fx = np.zeros((len(xstar), len(self.precomputed_As)), dtype=complex)
-                for k, Ak in enumerate(self.precomputed_As):
-                    Fx[:, k] = -Ak @ xstar
+            # get_hess implies get_grad also
+            grad = np.real(xstar.conj() @ (Fx + 2 * self.Fs))
+            grad[self.n_proj_constr :] += self.c_2j
 
-                # get_hess implies get_grad also
-                grad = np.real(xstar.conj() @ (Fx + 2 * self.Fs))
-                grad[self.n_proj_constr :] += self.c_2j
-
-                Ftot = Fx + self.Fs
-                hess = 2 * np.real(Ftot.conj().T @ self._Acho_solve(Ftot))
-            except AttributeError:
-                # this assumes that in the future we may consider making
-                # precomputed_As optional can also compute the Hessian without
-                # precomputed_As, leave for future implementation if useful
-                raise AttributeError("precomputed_As needed for computing Hessian")
+            Ftot = Fx + self.Fs
+            hess = 2 * np.real(Ftot.conj().T @ self._Acho_solve(Ftot))
 
         elif get_grad:
             # Generic projector gradient (works for diagonal and general P)
@@ -709,11 +729,8 @@ class _SharedProjQCQP(ABC):
                 # are quadratic in p_j, so the sum over j cannot be collapsed by
                 # summing Fv first: sum_j x_j^† M x_j is not
                 # (sum_j x_j)^† M (sum_j x_j).
-                Fv = np.zeros((penalty_matrix.shape[0], len(grad)), dtype=complex)
                 for j in range(penalty_matrix.shape[1]):
-                    for k, Ak in enumerate(self.precomputed_As):
-                        Fv[:, k] = Ak @ A_inv_penalty[:, j]
-
+                    Fv = self._allA_at_v(A_inv_penalty[:, j])
                     grad_penalty += np.real(-A_inv_penalty[:, j].conj().T @ Fv)
                     hess_penalty += 2 * np.real(Fv.conj().T @ self._Acho_solve(Fv))
 
@@ -747,16 +764,6 @@ class _SharedProjQCQP(ABC):
                 else:
                     grad_penalty = proj_grad_penalty
 
-        DualAux = namedtuple(
-            "DualAux",
-            [
-                "dualval_real",
-                "dualgrad_real",
-                "dualval_penalty",
-                "grad_penalty",
-                "hess_penalty",
-            ],
-        )
         dual_aux = DualAux(
             dualval_real=dualval,
             dualgrad_real=grad,
