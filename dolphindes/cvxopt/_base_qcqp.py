@@ -302,7 +302,7 @@ class _SharedProjQCQP(ABC):
         """Return total A using precomputed_As.
 
         Assembles on the fixed pattern when one is available (see
-        ``_build_assembly_map``), otherwise sums the A_k elmentwise.
+        ``_build_assembly_map``), otherwise sums the A_k elementwise.
         """
         if not self._assembly_map_built:
             self._assembly_map = self._build_assembly_map()
@@ -320,16 +320,16 @@ class _SharedProjQCQP(ABC):
     ) -> Optional[Tuple[Any, Any, Tuple[int, int], ComplexArray, ComplexArray]]:
         """Return a fixed-pattern representation of A(lags), or None if unavailable.
 
-        Every A_k is supported inside one lags-independent pattern so A(lags) needs no 
-        index merging at all. Holding each A_k's entries in their slots in that pattern 
+        Every A_k is supported inside one lags-independent pattern so A(lags) needs no
+        index merging at all. Holding each A_k's entries in their slots in that pattern
         as the columns of a dense ``(nnz, n_constr)`` block D,
 
             A(lags).data = a0 + D @ lags
 
         which is one operation over contiguous memory in place of ``n_constr`` sparse
-        additions that each merge two index structures and allocate. 
+        additions that each merge two index structures and allocate.
 
-        Returns None (leaving the elmentwise sum in use) when the formulation is
+        Returns None (leaving the elementwise sum in use) when the formulation is
         dense, where the A_k are full n^2 matrices with no pattern to share, or when
         D would exceed ``_assembly_map_max_bytes``.
 
@@ -343,7 +343,14 @@ class _SharedProjQCQP(ABC):
 
         mats = [sp.csc_array(self.A0)] + [sp.csc_array(a) for a in self.precomputed_As]
         for m in mats:
+            # sort_indices orders but does not coalesce; duplicate (i, j) entries would
+            # make the scatter below keep only the last one, silently disagreeing with
+            # the elementwise sum.
+            m.sum_duplicates()
             m.sort_indices()
+
+        # A0 keeps whatever dtype it was given on the sparse path
+        dtype = np.result_type(*[m.dtype for m in mats], np.float64)
 
         def pattern(m: sp.csc_array) -> sp.csc_array:
             ones = m.copy()
@@ -357,14 +364,14 @@ class _SharedProjQCQP(ABC):
         union.sort_indices()
 
         nnz = union.nnz
-        if nnz * len(self.precomputed_As) * 16 > self._assembly_map_max_bytes:
+        if nnz * len(mats[1:]) * dtype.itemsize > self._assembly_map_max_bytes:
             return None
 
         slot_carrier = union.copy()
         slot_carrier.data = np.arange(1, nnz + 1, dtype=float)
 
-        a0 = np.zeros(nnz, dtype=complex)
-        D = np.zeros((nnz, len(self.precomputed_As)), dtype=complex)
+        a0 = np.zeros(nnz, dtype=dtype)
+        D = np.zeros((nnz, len(self.precomputed_As)), dtype=dtype)
         for j, m in enumerate(mats):
             slots = sp.csc_array(slot_carrier.multiply(pattern(m)))
             slots.sort_indices()
@@ -589,8 +596,8 @@ class _SharedProjQCQP(ABC):
 
         Shift-invert at sigma=0 works by applying A^{-1}, and left to itself
         ``eigsh`` builds a factorization of A for that purpose and throws it away
-        on return. 
-        
+        on return.
+
         Subclasses that can apply A^{-1} more cheaply say so through
         :meth:`_shift_invert_OPinv`. A(lags) is also factorized through
         ``_get_factorization`` rather than merely assembled, so a factor already in
@@ -683,7 +690,11 @@ class _SharedProjQCQP(ABC):
         ComplexArray
             Block of shape (len(v), n_proj_constr + n_gen_constr).
         """
-        out = np.empty((len(v), self.get_number_constraints()), dtype=complex)
+        # Sized from the loop's own source: precomputed_As always has one entry per
+        # constraint, but sizing from get_number_constraints() instead would leave
+        # trailing columns uninitialized in the case
+        # of a subclass that over-rides that.
+        out = np.empty((len(v), len(self.precomputed_As)), dtype=complex)
         for k, Ak in enumerate(self.precomputed_As):
             out[:, k] = Ak @ v
         return out

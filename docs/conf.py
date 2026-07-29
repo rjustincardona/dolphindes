@@ -11,7 +11,7 @@ project = "Dolphindes"
 copyright = "2025, DolphinDes contributors"
 author = "DolphinDes contributors"
 # Pull the version from the installed package so it stays in sync with
-# dolphindes/__init__.py 
+# dolphindes/__init__.py
 release = _pkg_version("dolphindes")
 
 # -- General configuration ---------------------------------------------------

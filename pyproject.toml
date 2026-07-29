@@ -69,7 +69,7 @@ extend-exclude = ["*.ipynb", "build", "dist"]
 
 [tool.ruff.lint]
 # Enable general linting + docstring checks
-select = ["E", "F", "I", "D"]
+select = ["E", "W", "F", "I", "D"]
 # jaxtyping shape annotations such as Complex[Array, " n"] contain string shape
 # specs that pyflakes parses as forward references; F722 would flag them as
 # syntax errors. The shape names live inside the string, so F821 is unaffected.
