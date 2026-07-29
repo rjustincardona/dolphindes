@@ -885,7 +885,177 @@ def test_hs_kernel_cache_reused():
     k1 = gcd._hs_kernels(qcqp)
     k2 = gcd._hs_kernels(qcqp)
     for a, b in zip(k1, k2):
-        assert a is b  # same cached array objects, not recomputed
+        assert a is b
+
+
+def _elementwise_total_A(qcqp, lags):
+    """A(lags) summed one constraint at a time, i.e. without the assembly map."""
+    return qcqp.A0 + sum(lags[i] * qcqp.precomputed_As[i] for i in range(len(lags)))
+
+
+def _assert_total_A_matches_elementwise(qcqp, lags, atol=1e-12):
+    got = sp.csc_array(qcqp._get_total_A(lags))
+    want = sp.csc_array(_elementwise_total_A(qcqp, lags))
+    assert abs(got - want).max() <= atol * abs(want).max()
+
+
+def _sparse_qcqp_for_assembly(diagonal, n_gen, n=12, k=4, seed=5):
+    """A sparse QCQP with diagonal or non-diagonal projectors and optional general
+    constraints, for exercising the fixed-pattern assembly of A(lags)."""
+    rng = np.random.default_rng(seed)
+
+    def rc(shape):
+        return rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+
+    if diagonal:
+        # unequal, partly overlapping supports, as refine_projectors produces
+        diags = rc((n, k))
+        diags[rng.random((n, k)) < 0.4] = 0.0
+        Projlist = [sp.diags_array(diags[:, j], format="csc") for j in range(k)]
+    else:
+        Projlist = [
+            sp.csc_array(np.outer(v, v.conj())) for v in (rc(n) for _ in range(k))
+        ]
+    Pstruct = Projlist[0] != 0
+    for P in Projlist[1:]:
+        Pstruct = Pstruct.maximum(P != 0)
+
+    A0 = sp.csc_array(sp.eye_array(n, format="csc") * 3.0)
+    return SparseSharedProjQCQP(
+        A0,
+        rc(n),
+        0.0,
+        sp.csc_array(rc((n, n))),
+        sp.csc_array(rc((n, n))),
+        rc(n),
+        Projlist,
+        sp.csc_array(Pstruct),
+        B_j=[sp.csc_array(rc((n, n))) for _ in range(n_gen)] or None,
+        s_2j=[rc(n) for _ in range(n_gen)] or None,
+        c_2j=rng.standard_normal(n_gen) if n_gen else None,
+        verbose=0,
+    )
+
+
+def _real_sparse_qcqp_for_assembly(n=10, k=3, seed=8):
+    """A sparse QCQP whose quadratic parts are real. A0 keeps the dtype it is given on
+    the sparse path, so the assembly map must not promote such a problem to complex."""
+    rng = np.random.default_rng(seed)
+    Projlist = [sp.diags_array(rng.standard_normal(n), format="csc") for _ in range(k)]
+    Pstruct = sp.csc_array(sp.eye_array(n, format="csc"))
+    return SparseSharedProjQCQP(
+        sp.csc_array(sp.eye_array(n, format="csc") * 3.0),
+        rng.standard_normal(n),
+        0.0,
+        sp.csc_array(rng.standard_normal((n, n))),
+        sp.csc_array(rng.standard_normal((n, n))),
+        rng.standard_normal(n),
+        Projlist,
+        Pstruct,
+        verbose=0,
+    )
+
+
+@pytest.mark.parametrize("diagonal", [True, False])
+@pytest.mark.parametrize("n_gen", [0, 2])
+def test_assembly_map_matches_elementwise_sum(diagonal, n_gen):
+    """A(lags) assembled on the fixed pattern equals the elementwise sum, at more than
+    one lags (the second reuses the cached map)."""
+    qcqp = _sparse_qcqp_for_assembly(diagonal, n_gen)
+    n_constr = qcqp.get_number_constraints()
+    rng = np.random.default_rng(2)
+    _assert_total_A_matches_elementwise(qcqp, rng.standard_normal(n_constr))
+    assert qcqp._assembly_map is not None, "expected a fixed-pattern map here"
+    _assert_total_A_matches_elementwise(qcqp, rng.standard_normal(n_constr))
+
+
+@pytest.mark.parametrize("diagonal", [True, False])
+@pytest.mark.parametrize("n_gen", [0, 2])
+def test_assembly_map_matches_elementwise_derivatives(diagonal, n_gen):
+    """The two assembly paths agree on what callers actually consume: the dual value,
+    its gradient and its Hessian, penalty terms included."""
+    qcqp = _sparse_qcqp_for_assembly(diagonal, n_gen)
+    rng = np.random.default_rng(3)
+    n = qcqp.A0.shape[0]
+    # A0 = 3I dominates at this scale, so a small point is interior
+    lags = 1e-3 * rng.standard_normal(qcqp.get_number_constraints())
+    assert qcqp.is_dual_feasible(lags)
+    v = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    kwargs = dict(get_grad=True, get_hess=True, penalty_vectors=[1e-3 * v])
+
+    dual_map, grad_map, hess_map, aux_map = qcqp.get_dual(lags, **kwargs)
+    assert qcqp._assembly_map is not None, "expected a fixed-pattern map here"
+
+    qcqp._assembly_map_max_bytes = 1  # force the elementwise sum
+    qcqp._invalidate_factor_cache()
+    dual_el, grad_el, hess_el, aux_el = qcqp.get_dual(lags, **kwargs)
+    assert qcqp._assembly_map is None
+
+    assert np.isclose(dual_map, dual_el, rtol=1e-11)
+    assert np.allclose(grad_map, grad_el, rtol=1e-9, atol=1e-11)
+    assert np.allclose(hess_map, hess_el, rtol=1e-9, atol=1e-11)
+    assert np.allclose(aux_map.grad_penalty, aux_el.grad_penalty, rtol=1e-9, atol=1e-11)
+    assert np.allclose(aux_map.hess_penalty, aux_el.hess_penalty, rtol=1e-9, atol=1e-11)
+
+
+def test_assembly_map_preserves_real_dtype():
+    """A real-valued problem must stay real: promoting A(lags) to complex would double
+    CHOLMOD's memory and factorization cost."""
+    qcqp = _real_sparse_qcqp_for_assembly()
+    lags = np.abs(qcqp.find_feasible_lags())
+    assert qcqp.A0.dtype == np.float64  # else the fixture is not exercising this
+    assert all(Ak.dtype == np.float64 for Ak in qcqp.precomputed_As)
+
+    got = qcqp._get_total_A(lags)
+    assert qcqp._assembly_map is not None, "expected a fixed-pattern map here"
+    want = _elementwise_total_A(qcqp, lags)
+    assert got.dtype == want.dtype == np.float64
+    _assert_total_A_matches_elementwise(qcqp, lags)
+
+
+def test_assembly_map_dropped_on_constraint_edits(sparse_qcqp_data):
+    """Every edit to the constraint set leaves A(lags) consistent: a surviving stale
+    map (it holds a copy of each A_k's data) would show up immediately."""
+    qcqp = sparse_qcqp_data["qcqp"]
+    qcqp.current_lags = qcqp.find_feasible_lags()
+    qcqp._get_total_A(np.abs(qcqp.current_lags))
+    assert qcqp._assembly_map is not None
+
+    qcqp._invalidate_factor_cache()
+    assert qcqp._assembly_map is None and not qcqp._assembly_map_built
+
+    rng = np.random.default_rng(0)
+    edits = [
+        lambda: qcqp.refine_projectors(),
+        lambda: qcqp.add_constraints(
+            [rng.standard_normal(qcqp.Proj.Pstruct.size) + 0j]
+        ),
+        lambda: qcqp.merge_lead_constraints(merged_num=2),
+    ]
+    for edit in edits:
+        qcqp._get_total_A(np.abs(qcqp.current_lags))  # build a map, then invalidate it
+        edit()
+        _assert_total_A_matches_elementwise(qcqp, np.abs(qcqp.current_lags))
+
+
+def test_assembly_map_falls_back_when_too_large(sparse_qcqp_data):
+    """Above the memory budget the map is declined and the elementwise sum is used."""
+    qcqp = sparse_qcqp_data["qcqp"]
+    lags = np.abs(qcqp.find_feasible_lags())
+    qcqp._assembly_map_max_bytes = 1
+    qcqp._invalidate_factor_cache()
+    _assert_total_A_matches_elementwise(qcqp, lags)
+    assert qcqp._assembly_map is None
+
+
+def test_assembly_map_declined_for_dense(dense_qcqp_data):
+    """The dense formulation has no shared pattern to exploit, so no map is built."""
+    qcqp = dense_qcqp_data["qcqp"]
+    lags = np.abs(qcqp.find_feasible_lags())
+    got = qcqp._get_total_A(lags)
+    want = _elementwise_total_A(qcqp, lags)
+    assert qcqp._assembly_map is None
+    assert np.allclose(got, want, atol=1e-12)
 
 
 def test_invalid_ortho_metric_raises():
