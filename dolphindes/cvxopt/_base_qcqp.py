@@ -220,6 +220,15 @@ class _SharedProjQCQP(ABC):
         # (A1, A2, s1, Pstruct), which are fixed after construction.
         self._hs_kernel_cache: Optional[Tuple[Any, Any, Any]] = None
 
+        # Fixed-pattern representation of A(lags), built lazily by _build_assembly_map.
+        # None means sum the A_k elementwise, _built distinguishes that from not
+        # having built it yet
+        self._assembly_map: Optional[
+            Tuple[Any, Any, Tuple[int, int], ComplexArray, ComplexArray]
+        ] = None
+        self._assembly_map_built = False
+        self._assembly_map_max_bytes = 512 * 1024**2
+
         if self.use_precomp:
             self.compute_precomputed_values()
 
@@ -290,8 +299,82 @@ class _SharedProjQCQP(ABC):
         )
 
     def _get_total_A_precomp(self, lags: FloatNDArray) -> sp.csc_array | ComplexArray:
-        """Return total A using precomputed_As (fast path for few constraints)."""
-        return self.A0 + sum(lags[i] * self.precomputed_As[i] for i in range(len(lags)))
+        """Return total A using precomputed_As.
+
+        Assembles on the fixed pattern when one is available (see
+        ``_build_assembly_map``), otherwise sums the A_k elmentwise.
+        """
+        if not self._assembly_map_built:
+            self._assembly_map = self._build_assembly_map()
+            self._assembly_map_built = True
+        if self._assembly_map is None:
+            return self.A0 + sum(
+                lags[i] * self.precomputed_As[i] for i in range(len(lags))
+            )
+        indptr, indices, shape, a0, D = self._assembly_map
+        data = a0 + D[:, : len(lags)] @ lags
+        return sp.csc_array((data, indices, indptr), shape=shape)
+
+    def _build_assembly_map(
+        self,
+    ) -> Optional[Tuple[Any, Any, Tuple[int, int], ComplexArray, ComplexArray]]:
+        """Return a fixed-pattern representation of A(lags), or None if unavailable.
+
+        Every A_k is supported inside one lags-independent pattern so A(lags) needs no 
+        index merging at all. Holding each A_k's entries in their slots in that pattern 
+        as the columns of a dense ``(nnz, n_constr)`` block D,
+
+            A(lags).data = a0 + D @ lags
+
+        which is one operation over contiguous memory in place of ``n_constr`` sparse
+        additions that each merge two index structures and allocate. 
+
+        Returns None (leaving the elmentwise sum in use) when the formulation is
+        dense, where the A_k are full n^2 matrices with no pattern to share, or when
+        D would exceed ``_assembly_map_max_bytes``.
+
+        Returns
+        -------
+        tuple | None
+            ``(indptr, indices, shape, a0, D)``, or None.
+        """
+        if not sp.issparse(self.A0) or not self.precomputed_As:
+            return None
+
+        mats = [sp.csc_array(self.A0)] + [sp.csc_array(a) for a in self.precomputed_As]
+        for m in mats:
+            m.sort_indices()
+
+        def pattern(m: sp.csc_array) -> sp.csc_array:
+            ones = m.copy()
+            ones.data = np.ones(m.nnz)
+            return ones
+
+        union = pattern(mats[0])
+        for m in mats[1:]:
+            union = union + pattern(m)
+        union = sp.csc_array(union)
+        union.sort_indices()
+
+        nnz = union.nnz
+        if nnz * len(self.precomputed_As) * 16 > self._assembly_map_max_bytes:
+            return None
+
+        slot_carrier = union.copy()
+        slot_carrier.data = np.arange(1, nnz + 1, dtype=float)
+
+        a0 = np.zeros(nnz, dtype=complex)
+        D = np.zeros((nnz, len(self.precomputed_As)), dtype=complex)
+        for j, m in enumerate(mats):
+            slots = sp.csc_array(slot_carrier.multiply(pattern(m)))
+            slots.sort_indices()
+            pos = slots.data.astype(np.int64) - 1
+            if j == 0:
+                a0[pos] = m.data
+            else:
+                D[pos, j - 1] = m.data
+
+        return union.indptr, union.indices, union.shape, a0, D
 
     def _get_total_A_noprecomp(self, lags: FloatNDArray) -> sp.csc_array | ComplexArray:
         """Return total A without precomputation (better for many constraints)."""
@@ -346,12 +429,16 @@ class _SharedProjQCQP(ABC):
         return np.ascontiguousarray(lags, dtype=np.float64).tobytes()
 
     def _invalidate_factor_cache(self) -> None:
-        """Drop all cached factorizations.
+        """Drop all cached factorizations and the fixed-pattern assembly map.
 
         Must be called whenever A(lags) changes for a fixed lags, i.e. whenever
-        A0, precomputed_As or the constraint set are modified.
+        A0, precomputed_As or the constraint set are modified. The assembly map is
+        dropped here too: it holds a copy of every A_k's data, so it goes stale
+        under the same edits.
         """
         self._factor_cache.clear()
+        self._assembly_map = None
+        self._assembly_map_built = False
 
     def _store_factor(self, key: bytes, A: Any, factor: Any) -> None:
         """Record (A, factor) for ``key`` and mark it the active factorization.
