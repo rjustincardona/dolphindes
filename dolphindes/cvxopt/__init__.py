@@ -1,6 +1,6 @@
 """Routines for optimization."""
 
-from . import gcd
+from . import gcd, matrix_free
 from ._base_qcqp import _SharedProjQCQP
 from .gcd import GCDHyperparameters
 from .optimization import BFGS, Alt_Newton_GD, OptimizationHyperparameters
@@ -18,4 +18,5 @@ __all__ = [
     "OptimizationHyperparameters",
     "gcd",
     "GCDHyperparameters",
+    "matrix_free",
 ]

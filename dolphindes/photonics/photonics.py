@@ -69,6 +69,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
         ei: Optional[ComplexGrid] = None,
         chi_background: Optional[ComplexGrid] = None,
         sparseQCQP: bool = True,
+        matrix_free: bool = False,
         A0: Optional[Union[ComplexArray, sp.csc_array]] = None,
         s0: Optional[ComplexArray] = None,
         c0: float = 0.0,
@@ -94,6 +95,9 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             Background structure susceptibility.
         sparseQCQP : bool, optional
             Flag for sparse QCQP formulation. Default: True
+        matrix_free : bool, optional
+            Use the matrix-free (CG-based, log-barrier) dual solver instead
+            of the Cholesky-based ones. Default: False.
         A0 : ndarray or csc_array, optional
             Objective quadratic matrix.
         s0 : ndarray of complex, optional
@@ -139,6 +143,7 @@ class Photonics_TM_FDFD(Photonics_FDFD):
             ei,
             chi_background,
             sparseQCQP,
+            matrix_free,
             A0,
             s0,
             c0,

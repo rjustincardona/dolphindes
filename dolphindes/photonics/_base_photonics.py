@@ -23,6 +23,7 @@ from dolphindes.cvxopt import (
     OptimizationHyperparameters,
     SparseSharedProjQCQP,
 )
+from dolphindes.cvxopt.matrix_free import MatrixFreeSharedProjQCQP
 from dolphindes.geometry import GeometryHyperparameters
 from dolphindes.types import (
     BoolGrid,
@@ -64,6 +65,12 @@ class Photonics_FDFD(ABC):
         The default is None, in which case it is set to vacuum.
     sparseQCQP : bool or None
         Boolean flag indicating whether the sparse QCQP convention is used.
+    matrix_free : bool
+        If True, `setup_QCQP` builds a `MatrixFreeSharedProjQCQP` (CG-based,
+        log-barrier dual solver) instead of `SparseSharedProjQCQP`/
+        `DenseSharedProjQCQP`. Problem assembly (A0/A1/A2/s0/s1) is
+        unaffected by this flag -- it only changes how the dual problem is
+        solved. Default: False (unchanged Cholesky-based behavior).
     A0 : ndarray of complex or scipy.sparse.csc_array or None
         A0 array in the QCQP field design objective.
     s0 : ndarray of complex or None
@@ -71,7 +78,8 @@ class Photonics_FDFD(ABC):
     c0 : float
         The constant c0 in the QCQP field design objective.
     QCQP : :class:`dolphindes.cvxopt.qcqp.SparseSharedProjQCQP` |
-        :class:`dolphindes.cvxopt.qcqp.DenseSharedProjQCQP` | None
+        :class:`dolphindes.cvxopt.qcqp.DenseSharedProjQCQP` |
+        :class:`dolphindes.cvxopt.matrix_free.MatrixFreeSharedProjQCQP` | None
         The QCQP instance for optimization.
     """
 
@@ -85,6 +93,7 @@ class Photonics_FDFD(ABC):
         ei: Optional[ComplexGrid] = None,
         chi_background: Optional[ComplexGrid] = None,
         sparseQCQP: Optional[bool] = None,
+        matrix_free: bool = False,
         A0: Optional[Union[ComplexArray, sp.csc_array]] = None,
         s0: Optional[ComplexArray] = None,
         c0: float = 0.0,
@@ -115,6 +124,9 @@ class Photonics_FDFD(ABC):
             Background structure susceptibility.
         sparseQCQP : bool, optional
             Flag for sparse QCQP formulation.
+        matrix_free : bool, optional
+            Use the matrix-free (CG-based, log-barrier) dual solver instead
+            of the Cholesky-based ones. Default: False.
         A0 : ndarray or csc_array, optional
             Objective quadratic matrix.
         s0 : ndarray of complex, optional
@@ -134,11 +146,14 @@ class Photonics_FDFD(ABC):
         self.chi_background = chi_background
 
         self.sparseQCQP = sparseQCQP
+        self.matrix_free = matrix_free
         self.A0 = A0
         self.s0 = s0
         self.c0 = c0
         self.Pdiags = Pdiags
-        self.QCQP: Optional[Union[SparseSharedProjQCQP, DenseSharedProjQCQP]] = None
+        self.QCQP: Optional[
+            Union[SparseSharedProjQCQP, DenseSharedProjQCQP, MatrixFreeSharedProjQCQP]
+        ] = None
         self._flatten_order: Literal["C", "F"] = flatten_order
 
         self.Ginv: Optional[sp.csc_array] = None
@@ -262,6 +277,10 @@ class Photonics_FDFD(ABC):
         -----
         For sparse QCQP, creates SparseSharedProjQCQP with transformed matrices.
         For dense QCQP, creates DenseSharedProjQCQP with original matrices.
+        If self.matrix_free is True, creates a MatrixFreeSharedProjQCQP instead
+        (from the transformed or original matrices per self.sparseQCQP, same as
+        above) -- a CG-based, log-barrier dual solver in place of the
+        Cholesky-based ones. Matrix assembly is identical either way.
 
         Raises
         ------
@@ -327,16 +346,28 @@ class Photonics_FDFD(ABC):
             A0_sp = self.A0
             s0_vec = self.s0
 
-            self.QCQP = SparseSharedProjQCQP(
-                A0_sp,
-                s0_vec,
-                self.c0,
-                A1_sparse,
-                A2_sparse,
-                s1_sparse,
-                self.Plist,
-                verbose=int(verbose),
-            )
+            if self.matrix_free:
+                self.QCQP = MatrixFreeSharedProjQCQP(
+                    A0_sp,
+                    s0_vec,
+                    self.c0,
+                    A1_sparse,
+                    A2_sparse,
+                    s1_sparse,
+                    self.Plist,
+                    verbose=int(verbose),
+                )
+            else:
+                self.QCQP = SparseSharedProjQCQP(
+                    A0_sp,
+                    s0_vec,
+                    self.c0,
+                    A1_sparse,
+                    A2_sparse,
+                    s1_sparse,
+                    self.Plist,
+                    verbose=int(verbose),
+                )
         else:
             if self.G is None:
                 self.setup_EM_operators()
@@ -358,16 +389,28 @@ class Photonics_FDFD(ABC):
             s1_qcqp = sqrtW * (ei_des / 2)
             A2_dense = sp.eye(self.Ndes, dtype=complex)
 
-            self.QCQP = DenseSharedProjQCQP(
-                A0_dense,
-                s0_vec,
-                self.c0,
-                A1_dense,
-                s1_qcqp,
-                self.Plist,
-                A2=A2_dense,
-                verbose=int(verbose),
-            )
+            if self.matrix_free:
+                self.QCQP = MatrixFreeSharedProjQCQP(
+                    A0_dense,
+                    s0_vec,
+                    self.c0,
+                    A1_dense,
+                    A2_dense,
+                    s1_qcqp,
+                    self.Plist,
+                    verbose=int(verbose),
+                )
+            else:
+                self.QCQP = DenseSharedProjQCQP(
+                    A0_dense,
+                    s0_vec,
+                    self.c0,
+                    A1_dense,
+                    s1_qcqp,
+                    self.Plist,
+                    A2=A2_dense,
+                    verbose=int(verbose),
+                )
 
     def get_ei(
         self, ji: Optional[ComplexGrid] = None, update: bool = False
